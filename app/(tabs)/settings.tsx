@@ -14,9 +14,9 @@ import {
 } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Colors } from "../../src/constants/colors";
-import { useAuth } from "../../src/context/AuthContext";
-import { useAvatars } from "../../src/context/AvatarContext";
+import { Colors } from "@/constants/colors";
+import { useAuth } from "@/context/AuthContext";
+import { useAvatars } from "@/context/AvatarContext";
 
 function SettingsRow({
   emoji,
@@ -56,7 +56,7 @@ function SettingsRow({
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
-  const { avatars, coins } = useAvatars();
+  const { avatars, coins, clearAvatars } = useAvatars();
   const insets = useSafeAreaInsets();
 
   const handleLogout = () => {
@@ -112,6 +112,12 @@ export default function SettingsScreen() {
         {/* Account Section */}
         <Text style={styles.sectionLabel}>Account</Text>
         <View style={styles.section}>
+          <SettingsRow
+            emoji="👤"
+            label="Edit Profile"
+            onPress={() => router.push("/profile")}
+          />
+          <View style={styles.divider} />
           <SettingsRow
             emoji="🪙"
             label="Buy Coins"
@@ -172,7 +178,21 @@ export default function SettingsScreen() {
                 "This will permanently delete all avatars.",
                 [
                   { text: "Cancel", style: "cancel" },
-                  { text: "Delete", style: "destructive", onPress: () => {} },
+                  {
+                    text: "Delete",
+                    style: "destructive",
+                    onPress: async () => {
+                      try {
+                        await clearAvatars();
+                        Alert.alert("Done", "All avatars were deleted.");
+                      } catch {
+                        Alert.alert(
+                          "Delete failed",
+                          "Could not delete avatars. Please try again.",
+                        );
+                      }
+                    },
+                  },
                 ],
               )
             }

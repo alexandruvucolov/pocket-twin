@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   View,
   Text,
@@ -9,25 +9,76 @@ import {
   Alert,
   Dimensions,
   TextInput,
+  Platform,
+  Keyboard,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import { CameraView } from "expo-camera";
 import { useRouter } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { Colors } from "../src/constants/colors";
-import { useAvatars } from "../src/context/AvatarContext";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { Colors } from "@/constants/colors";
+import { useAvatars } from "@/context/AvatarContext";
+import { useAuth } from "@/context/AuthContext";
+import {
+  firebaseEnabled,
+  getFirebaseErrorMessage,
+  uploadAvatarImage,
+} from "@/lib/firebase";
+import { createTalk, pollTalk, uploadImageToDID } from "@/lib/did";
+import { useVideoPlayer, VideoView } from "expo-video";
 
 const { width, height } = Dimensions.get("window");
 
-type Step = "pick" | "preview" | "animating" | "done";
+type Step = "pick" | "camera" | "preview" | "animating" | "done";
 
 export default function UploadScreen() {
   const router = useRouter();
   const { addAvatar } = useAvatars();
+  const { user } = useAuth();
+  const insets = useSafeAreaInsets();
 
   const [step, setStep] = useState<Step>("pick");
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [avatarName, setAvatarName] = useState("");
   const [progress, setProgress] = useState(0);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<"front" | "back">("front");
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const cameraRef = useRef<CameraView | null>(null);
+
+  const videoPlayer = useVideoPlayer(null, (player) => {
+    player.loop = true;
+  });
+
+  // Update player source when D-ID resolves
+  React.useEffect(() => {
+    if (videoUrl) {
+      videoPlayer.replace(videoUrl);
+      videoPlayer.play();
+    }
+  }, [videoUrl]);
+
+  React.useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    const showSub = Keyboard.addListener("keyboardDidShow", (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+    });
+
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const pickFromGallery = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -56,15 +107,34 @@ export default function UploadScreen() {
       Alert.alert("Permission needed", "Allow camera access to take a selfie.");
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.85,
-      cameraType: ImagePicker.CameraType.front,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setImageUri(result.assets[0].uri);
+    setStep("camera");
+  };
+
+  const captureSelfie = async () => {
+    if (!cameraRef.current || isCapturing) return;
+
+    setIsCapturing(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.85,
+        skipProcessing: false,
+        mirror: false,
+      });
+
+      if (!photo?.uri) {
+        Alert.alert(
+          "Capture failed",
+          "Could not take photo. Please try again.",
+        );
+        return;
+      }
+
+      setImageUri(photo.uri);
       setStep("preview");
+    } catch {
+      Alert.alert("Camera error", "Could not access camera. Please try again.");
+    } finally {
+      setIsCapturing(false);
     }
   };
 
@@ -73,26 +143,78 @@ export default function UploadScreen() {
       Alert.alert("Name required", "Give your avatar a name first!");
       return;
     }
+    if (!imageUri) return;
+
     setStep("animating");
     setProgress(0);
 
-    // Simulate D-ID API call with progress
-    const steps = [15, 35, 55, 70, 85, 100];
-    for (const p of steps) {
-      await new Promise((r) => setTimeout(r, 400 + Math.random() * 300));
-      setProgress(p);
+    try {
+      const avatarId = Date.now().toString();
+      let finalImageUri = imageUri;
+
+      setProgress(15);
+      await new Promise((r) => setTimeout(r, 250));
+
+      if (firebaseEnabled && user) {
+        setProgress(35);
+        finalImageUri = await uploadAvatarImage({
+          userId: user.id,
+          avatarId,
+          localUri: imageUri,
+        });
+      }
+
+      setProgress(50);
+
+      let resultVideoUrl: string | undefined;
+
+      if (firebaseEnabled && user) {
+        try {
+          const didImageUrl = await uploadImageToDID(imageUri);
+          const talkId = await createTalk(didImageUrl);
+          resultVideoUrl = await pollTalk(talkId, (pct) => setProgress(pct));
+          setProgress(100);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn("[D-ID] Animation failed:", msg);
+          Alert.alert(
+            "Animation failed",
+            `Could not animate your avatar: ${msg}\n\nYour avatar was still saved.`,
+            [{ text: "OK" }],
+          );
+          setProgress(100);
+        }
+      } else {
+        // Dev / no Firebase — fake progress so UI still animates
+        for (const p of [60, 75, 90, 100]) {
+          await new Promise((r) => setTimeout(r, 400));
+          setProgress(p);
+        }
+      }
+
+      setVideoUrl(resultVideoUrl ?? null);
+
+      addAvatar({
+        id: avatarId,
+        name: avatarName.trim(),
+        imageUri: finalImageUri,
+        videoUrl: resultVideoUrl,
+        createdAt: new Date(),
+        messageCount: 0,
+      });
+
+      setStep("done");
+    } catch (error) {
+      Alert.alert(
+        "Upload failed",
+        getFirebaseErrorMessage(
+          error,
+          "Could not upload avatar image. Please try again.",
+        ),
+      );
+      setStep("preview");
+      setProgress(0);
     }
-
-    // Create the avatar with the user's photo
-    addAvatar({
-      id: Date.now().toString(),
-      name: avatarName.trim(),
-      imageUri: imageUri!,
-      createdAt: new Date(),
-      messageCount: 0,
-    });
-
-    setStep("done");
   };
 
   const handleDone = () => {
@@ -107,7 +229,7 @@ export default function UploadScreen() {
           style={styles.closeButton}
           onPress={() => router.back()}
         >
-          <Text style={styles.closeText}>✕</Text>
+          <Ionicons name="chevron-back" size={22} color={Colors.text} />
         </TouchableOpacity>
 
         <View style={styles.heroSection}>
@@ -150,59 +272,134 @@ export default function UploadScreen() {
     );
   }
 
+  if (step === "camera") {
+    return (
+      <SafeAreaView style={styles.cameraRoot} edges={["top", "bottom"]}>
+        <CameraView
+          ref={cameraRef}
+          style={styles.cameraView}
+          facing={cameraFacing}
+          mirror={false}
+        />
+
+        <View style={styles.cameraGuideLayer} pointerEvents="none">
+          <View style={styles.cameraGuideSquare} />
+          <Text style={styles.cameraGuideText}>
+            Center your face in the frame
+          </Text>
+        </View>
+
+        <View style={styles.cameraOverlay}>
+          <View style={styles.cameraTopRow}>
+            <TouchableOpacity
+              style={styles.cameraBackButton}
+              onPress={() => setStep("pick")}
+            >
+              <Ionicons name="chevron-back" size={22} color={Colors.text} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cameraSwitchButton}
+              onPress={() =>
+                setCameraFacing((prev) => (prev === "front" ? "back" : "front"))
+              }
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name="camera-reverse-outline"
+                size={20}
+                color={Colors.text}
+              />
+            </TouchableOpacity>
+          </View>
+
+          <View
+            style={[
+              styles.cameraBottomBar,
+              { marginBottom: Math.max(18, insets.bottom + 16) },
+            ]}
+          >
+            <TouchableOpacity
+              style={styles.captureButtonOuter}
+              onPress={captureSelfie}
+              disabled={isCapturing}
+              activeOpacity={0.85}
+            >
+              <View style={styles.captureButtonInner} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   // ── Step: Preview ────────────────────────────────────────────────────────
   if (step === "preview") {
+    const previewTranslateY =
+      Platform.OS === "android" && keyboardHeight > 0
+        ? -Math.max(0, keyboardHeight - 120)
+        : 0;
+
     return (
       <SafeAreaView style={styles.root}>
-        <TouchableOpacity
-          style={styles.closeButton}
-          onPress={() => setStep("pick")}
-        >
-          <Text style={styles.closeText}>←</Text>
-        </TouchableOpacity>
-
-        <Text style={styles.previewTitle}>Looking good! 🎉</Text>
-        <Text style={styles.previewSub}>
-          Give your twin a name, then animate
-        </Text>
-
-        <View style={styles.previewImageWrap}>
-          <Image source={{ uri: imageUri! }} style={styles.previewImage} />
-          <TouchableOpacity
-            style={styles.retakeButton}
-            onPress={() => {
-              setImageUri(null);
-              setStep("pick");
-            }}
-          >
-            <Text style={styles.retakeText}>Retake</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.nameField}>
-          <Text style={styles.nameLabel}>Avatar Name</Text>
-          <TextInput
-            style={styles.nameInput}
-            placeholder='e.g. "My Work Twin"'
-            placeholderTextColor={Colors.textMuted}
-            value={avatarName}
-            onChangeText={setAvatarName}
-            maxLength={24}
-            autoFocus
-          />
-        </View>
-
-        <TouchableOpacity
+        <View
           style={[
-            styles.animateButton,
-            !avatarName.trim() && styles.animateButtonDisabled,
+            styles.previewScreen,
+            { transform: [{ translateY: previewTranslateY }] },
           ]}
-          onPress={handleAnimate}
-          disabled={!avatarName.trim()}
-          activeOpacity={0.88}
         >
-          <Text style={styles.animateButtonText}>✨ Animate Me!</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => setStep("pick")}
+          >
+            <Ionicons name="chevron-back" size={22} color={Colors.text} />
+          </TouchableOpacity>
+
+          <Text style={styles.previewTitle}>Looking good! 🎉</Text>
+          <Text style={styles.previewSub}>
+            Give your twin a name, then animate
+          </Text>
+
+          <View style={styles.previewImageWrap}>
+            <Image source={{ uri: imageUri! }} style={styles.previewImage} />
+            <TouchableOpacity
+              style={styles.retakeButton}
+              onPress={() => {
+                setImageUri(null);
+                setStep("pick");
+              }}
+            >
+              <Text style={styles.retakeText}>Retake</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.previewFormWrap}>
+            <View style={styles.nameField}>
+              <Text style={styles.nameLabel}>Avatar Name</Text>
+              <TextInput
+                style={styles.nameInput}
+                placeholder='e.g. "My Work Twin"'
+                placeholderTextColor={Colors.textMuted}
+                value={avatarName}
+                onChangeText={setAvatarName}
+                maxLength={24}
+                autoFocus
+              />
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.animateButton,
+                !avatarName.trim() && styles.animateButtonDisabled,
+              ]}
+              onPress={handleAnimate}
+              disabled={!avatarName.trim()}
+              activeOpacity={0.88}
+            >
+              <Text style={styles.animateButtonText}>✨ Animate Me!</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </SafeAreaView>
     );
   }
@@ -219,12 +416,12 @@ export default function UploadScreen() {
         />
         <Text style={styles.animatingTitle}>Animating your twin...</Text>
         <Text style={styles.animatingText}>
-          {progress < 40
+          {progress < 35
             ? "Uploading photo..."
-            : progress < 70
-              ? "Generating animation..."
+            : progress < 52
+              ? "Preparing animation..."
               : progress < 90
-                ? "Bringing it to life..."
+                ? "Generating animation..."
                 : "Almost there! ✨"}
         </Text>
         <View style={styles.progressBar}>
@@ -239,11 +436,24 @@ export default function UploadScreen() {
   return (
     <SafeAreaView style={[styles.root, styles.center]}>
       <View style={styles.doneRing}>
-        <Image source={{ uri: imageUri! }} style={styles.doneImage} />
+        {videoUrl ? (
+          <VideoView
+            player={videoPlayer}
+            style={styles.doneImage}
+            contentFit="cover"
+            nativeControls={false}
+          />
+        ) : (
+          <Image source={{ uri: imageUri! }} style={styles.doneImage} />
+        )}
       </View>
       <Text style={styles.doneEmoji}>🎉</Text>
       <Text style={styles.doneTitle}>Meet {avatarName}!</Text>
-      <Text style={styles.doneSub}>Hi! I'm ready to chat with you 👋</Text>
+      <Text style={styles.doneSub}>
+        {videoUrl
+          ? "Watch your twin come to life! 🎬"
+          : "I'm ready to chat with you 👋"}
+      </Text>
       <TouchableOpacity
         style={styles.chatButton}
         onPress={handleDone}
@@ -256,10 +466,100 @@ export default function UploadScreen() {
 }
 
 const styles = StyleSheet.create({
+  cameraRoot: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  cameraView: {
+    flex: 1,
+  },
+  cameraOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+  },
+  cameraGuideLayer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cameraGuideSquare: {
+    width: width * 0.68,
+    height: width * 0.68,
+    borderRadius: 24,
+    borderWidth: 3,
+    borderColor: "rgba(255,255,255,0.95)",
+    backgroundColor: "transparent",
+  },
+  cameraGuideText: {
+    marginTop: 14,
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 13,
+    fontWeight: "600",
+    backgroundColor: "rgba(0,0,0,0.35)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  cameraBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cameraTopRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cameraSwitchButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cameraBottomBar: {
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 18,
+  },
+  captureButtonOuter: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    borderWidth: 4,
+    borderColor: Colors.white,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  captureButtonInner: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: Colors.white,
+  },
   root: {
     flex: 1,
     backgroundColor: Colors.background,
     paddingHorizontal: 24,
+  },
+  previewScreen: {
+    flex: 1,
+  },
+  previewFormWrap: {
+    marginTop: 8,
+    paddingBottom: 12,
   },
   center: {
     alignItems: "center",
@@ -367,7 +667,7 @@ const styles = StyleSheet.create({
   },
   previewImageWrap: {
     alignItems: "center",
-    marginBottom: 24,
+    marginBottom: 12,
   },
   previewImage: {
     width: width * 0.65,

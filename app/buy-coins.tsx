@@ -11,9 +11,9 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Colors } from "../src/constants/colors";
-import { useAvatars } from "../src/context/AvatarContext";
-import { COIN_PACKS } from "../src/constants/dummy";
+import { Colors } from "@/constants/colors";
+import { useAvatars } from "@/context/AvatarContext";
+import { COIN_PACKS } from "@/constants/dummy";
 
 const { width } = Dimensions.get("window");
 
@@ -22,6 +22,17 @@ export default function BuyCoinsScreen() {
   const { coins, addCoins } = useAvatars();
   const [selectedPack, setSelectedPack] = useState<string | null>("coins_50");
   const [isPurchasing, setIsPurchasing] = useState(false);
+  const [isClaiming, setIsClaiming] = useState(false);
+
+  const handleFreeClaim = async () => {
+    setIsClaiming(true);
+    await new Promise((r) => setTimeout(r, 600));
+    addCoins(20);
+    setIsClaiming(false);
+    Alert.alert("🎁 Claimed!", "20 free coins added to your balance!", [
+      { text: "Nice!", onPress: () => router.back() },
+    ]);
+  };
 
   const handlePurchase = async () => {
     if (!selectedPack) return;
@@ -63,6 +74,29 @@ export default function BuyCoinsScreen() {
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
       >
+        {/* Free claim banner */}
+        <TouchableOpacity
+          style={styles.freeClaimBanner}
+          onPress={handleFreeClaim}
+          activeOpacity={0.85}
+          disabled={isClaiming}
+        >
+          {isClaiming ? (
+            <ActivityIndicator color={Colors.white} size="small" />
+          ) : (
+            <>
+              <Text style={styles.freeClaimEmoji}>🎁</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.freeClaimTitle}>Claim 20 Free Coins</Text>
+                <Text style={styles.freeClaimSub}>
+                  Tap to add to your balance instantly
+                </Text>
+              </View>
+              <Text style={styles.freeClaimArrow}>›</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
         {/* Hero */}
         <View style={styles.hero}>
           <Text style={styles.heroEmoji}>🪙</Text>
@@ -418,5 +452,33 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: "center",
     lineHeight: 16,
+  },
+  freeClaimBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(76,175,130,0.18)",
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 16,
+    marginBottom: 4,
+    borderWidth: 1.5,
+    borderColor: Colors.success,
+    gap: 12,
+  },
+  freeClaimEmoji: { fontSize: 28 },
+  freeClaimTitle: {
+    color: Colors.success,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  freeClaimSub: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  freeClaimArrow: {
+    color: Colors.success,
+    fontSize: 26,
+    fontWeight: "300",
   },
 });

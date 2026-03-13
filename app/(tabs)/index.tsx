@@ -14,10 +14,10 @@ import {
 } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Colors } from "../../src/constants/colors";
-import { useAuth } from "../../src/context/AuthContext";
-import { useAvatars } from "../../src/context/AvatarContext";
-import { Avatar } from "../../src/constants/dummy";
+import { Colors } from "@/constants/colors";
+import { useAuth } from "@/context/AuthContext";
+import { useAvatars } from "@/context/AvatarContext";
+import { Avatar } from "@/types/avatar";
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - 24 * 2 - 12) / 2;

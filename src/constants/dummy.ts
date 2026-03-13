@@ -1,11 +1,4 @@
-export interface Avatar {
-  id: string;
-  name: string;
-  imageUri: string;
-  createdAt: Date;
-  lastChatAt?: Date;
-  messageCount: number;
-}
+import { Avatar, ChatMessage } from "../types/avatar";
 
 export const DUMMY_AVATARS: Avatar[] = [
   {
@@ -33,10 +26,7 @@ export const DUMMY_AVATARS: Avatar[] = [
   },
 ];
 
-export const DUMMY_MESSAGES: Record<
-  string,
-  { role: "user" | "avatar"; text: string }[]
-> = {
+export const DUMMY_MESSAGES: Record<string, ChatMessage[]> = {
   "1": [
     { role: "avatar", text: "Hey! I'm your Pocket Twin. What's on your mind?" },
     { role: "user", text: "Tell me something interesting." },

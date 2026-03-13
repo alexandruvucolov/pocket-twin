@@ -13,6 +13,7 @@ import {
   Dimensions,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/context/AuthContext";
 import { Colors } from "../../src/constants/colors";
 
@@ -20,12 +21,20 @@ const { width, height } = Dimensions.get("window");
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn, signUp, isLoading } = useAuth();
+  const { signIn, signUp, isLoading, user } = useAuth();
+
+  // If user is already authenticated (e.g. session restored after reload), go to tabs.
+  React.useEffect(() => {
+    if (!isLoading && user) {
+      router.replace("/(tabs)");
+    }
+  }, [user, isLoading]);
 
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const validate = () => {
@@ -145,14 +154,32 @@ export default function LoginScreen() {
 
           <View style={styles.fieldGroup}>
             <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={[styles.input, errors.password ? styles.inputError : null]}
-              placeholder="••••••••"
-              placeholderTextColor={Colors.textMuted}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-            />
+            <View
+              style={[
+                styles.passwordWrap,
+                errors.password ? styles.inputError : null,
+              ]}
+            >
+              <TextInput
+                style={styles.passwordInput}
+                placeholder="••••••••"
+                placeholderTextColor={Colors.textMuted}
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+              />
+              <TouchableOpacity
+                style={styles.passwordToggle}
+                onPress={() => setShowPassword((prev) => !prev)}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={showPassword ? "eye-off-outline" : "eye-outline"}
+                  size={20}
+                  color={Colors.textMuted}
+                />
+              </TouchableOpacity>
+            </View>
             {errors.password ? (
               <Text style={styles.errorText}>{errors.password}</Text>
             ) : null}
@@ -301,6 +328,25 @@ const styles = StyleSheet.create({
     fontSize: 16,
     borderWidth: 1.5,
     borderColor: Colors.border,
+  },
+  passwordWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.surfaceHigh,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    paddingLeft: 16,
+  },
+  passwordInput: {
+    flex: 1,
+    color: Colors.text,
+    paddingVertical: 14,
+    fontSize: 16,
+  },
+  passwordToggle: {
+    paddingHorizontal: 14,
+    paddingVertical: 14,
   },
   inputError: {
     borderColor: Colors.error,
