@@ -20,7 +20,7 @@ from aiortc.sdp import candidate_from_sdp
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from runtime import PlaceholderTrack, SESSIONS, close_session, get_session
+from runtime import PlaceholderTrack, SESSIONS, close_session, get_session, load_source_frame
 from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 
 
@@ -207,7 +207,17 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
     session_id = f"session_{uuid4().hex}"
     ice_servers = await get_ice_servers()
     pc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
-    track = PlaceholderTrack(body.avatarName)
+    source_frame = None
+    try:
+        source_frame = await asyncio.to_thread(
+            load_source_frame,
+            body.sourceImageUrl,
+            body.sourceImageBase64,
+        )
+    except Exception:
+        logger.exception("Failed to load avatar source image for session %s", session_id)
+
+    track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
     pc.addTrack(track)
     SESSIONS[session_id] = (pc, track)
     PENDING_ICE_CANDIDATES[session_id] = []
