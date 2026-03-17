@@ -133,7 +133,6 @@ async def _add_ice_candidate(
 ) -> None:
     candidate_value = payload.get("candidate")
     if not candidate_value:
-        await pc.addIceCandidate(None)
         return
 
     candidate = candidate_from_sdp(str(candidate_value).replace("candidate:", "", 1))
