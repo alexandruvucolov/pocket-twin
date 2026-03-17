@@ -127,6 +127,28 @@ def serialize_ice_servers(ice_servers: list[RTCIceServer]) -> list[dict[str, Any
     return serialized
 
 
+async def _wait_for_ice_gathering_complete(
+    pc: RTCPeerConnection,
+    timeout: float = 8.0,
+) -> None:
+    if pc.iceGatheringState == "complete":
+        return
+
+    completed = asyncio.Event()
+
+    @pc.on("icegatheringstatechange")
+    async def on_ice_gathering_state_change() -> None:
+        if pc.iceGatheringState == "complete":
+            completed.set()
+
+    try:
+        await asyncio.wait_for(completed.wait(), timeout=timeout)
+    except TimeoutError:
+        logger.warning(
+            "Timed out waiting for ICE gathering to complete; returning best-effort offer"
+        )
+
+
 async def _add_ice_candidate(
     pc: RTCPeerConnection,
     payload: dict[str, str | int | None],
@@ -173,7 +195,7 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    await asyncio.sleep(0.2)
+    await _wait_for_ice_gathering_complete(pc)
     local = pc.localDescription
     if not local:
         raise HTTPException(status_code=500, detail="Failed to create offer")
