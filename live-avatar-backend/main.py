@@ -26,6 +26,10 @@ from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+PENDING_ICE_CANDIDATES: dict[
+    str,
+    list[dict[str, str | int | None]],
+] = {}
 
 
 def _split_urls(value: str) -> list[str]:
@@ -122,6 +126,27 @@ def serialize_ice_servers(ice_servers: list[RTCIceServer]) -> list[dict[str, Any
         serialized.append(item)
     return serialized
 
+
+async def _add_ice_candidate(
+    pc: RTCPeerConnection,
+    payload: dict[str, str | int | None],
+) -> None:
+    candidate_value = payload.get("candidate")
+    if not candidate_value:
+        await pc.addIceCandidate(None)
+        return
+
+    candidate = candidate_from_sdp(str(candidate_value).replace("candidate:", "", 1))
+    candidate.sdpMid = (
+        str(payload.get("sdpMid")) if payload.get("sdpMid") is not None else None
+    )
+    candidate.sdpMLineIndex = (
+        int(payload["sdpMLineIndex"])
+        if payload.get("sdpMLineIndex") is not None
+        else None
+    )
+    await pc.addIceCandidate(candidate)
+
 app = FastAPI(title="Pocket Twin Live Avatar Backend")
 app.add_middleware(
     CORSMiddleware,
@@ -145,6 +170,7 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
     track = PlaceholderTrack(body.avatarName)
     pc.addTrack(track)
     SESSIONS[session_id] = (pc, track)
+    PENDING_ICE_CANDIDATES[session_id] = []
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
@@ -168,19 +194,34 @@ async def submit_answer(session_id: str, body: AnswerBody) -> dict[str, bool | s
     if not answer_type or not answer_sdp:
         raise HTTPException(status_code=400, detail="Answer SDP is missing")
     await pc.setRemoteDescription(RTCSessionDescription(answer_sdp, answer_type))
+
+    pending = PENDING_ICE_CANDIDATES.get(session_id, [])
+    while pending:
+        payload = pending.pop(0)
+        await _add_ice_candidate(pc, payload)
+
     return {"ok": True, "sessionId": session_id}
 
 
 @app.post("/api/live-avatar/sessions/{session_id}/ice")
 async def submit_ice(session_id: str, body: IceBody) -> dict[str, bool | str]:
     pc, _ = get_session(session_id)
-    if not body.candidate:
-        await pc.addIceCandidate(None)
-    else:
-        candidate = candidate_from_sdp(body.candidate.replace("candidate:", "", 1))
-        candidate.sdpMid = body.sdpMid
-        candidate.sdpMLineIndex = body.sdpMLineIndex
-        await pc.addIceCandidate(candidate)
+    payload: dict[str, str | int | None] = {
+        "candidate": body.candidate,
+        "sdpMid": body.sdpMid,
+        "sdpMLineIndex": body.sdpMLineIndex,
+    }
+
+    if pc.remoteDescription is None:
+        PENDING_ICE_CANDIDATES.setdefault(session_id, []).append(payload)
+        return {"ok": True, "sessionId": session_id, "queued": True}
+
+    try:
+        await _add_ice_candidate(pc, payload)
+    except Exception as exc:
+        logger.exception("Failed to add ICE candidate for session %s", session_id)
+        raise HTTPException(status_code=400, detail=f"Invalid ICE candidate: {exc}") from exc
+
     return {"ok": True, "sessionId": session_id}
 
 
@@ -193,5 +234,6 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
 
 @app.delete("/api/live-avatar/sessions/{session_id}")
 async def delete_session(session_id: str) -> dict[str, bool | str]:
+    PENDING_ICE_CANDIDATES.pop(session_id, None)
     await close_session(session_id)
     return {"ok": True, "sessionId": session_id}
