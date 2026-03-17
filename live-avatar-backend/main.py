@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import ssl
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -23,6 +25,7 @@ from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 def _split_urls(value: str) -> list[str]:
@@ -47,6 +50,13 @@ def _fetch_metered_ice_servers_sync() -> list[RTCIceServer]:
     domain = os.getenv("LIVE_AVATAR_METERED_DOMAIN", "").strip()
     api_key = os.getenv("LIVE_AVATAR_METERED_API_KEY", "").strip()
     region = os.getenv("LIVE_AVATAR_METERED_REGION", "").strip()
+    api_base_url = os.getenv("LIVE_AVATAR_METERED_API_BASE_URL", "").strip()
+    allow_insecure_tls = os.getenv("LIVE_AVATAR_METERED_INSECURE_TLS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     if not domain or not api_key:
         return []
 
@@ -54,20 +64,26 @@ def _fetch_metered_ice_servers_sync() -> list[RTCIceServer]:
     if region:
         query["region"] = region
 
-    url = f"https://{domain}/api/v1/turn/credentials?{urlencode(query)}"
-    with urlopen(url, timeout=15) as response:
+    base_url = api_base_url.rstrip("/") or f"https://{domain}"
+    url = f"{base_url}/api/v1/turn/credentials?{urlencode(query)}"
+    ssl_context = ssl._create_unverified_context() if allow_insecure_tls else None
+    with urlopen(url, timeout=15, context=ssl_context) as response:
         payload = json.loads(response.read().decode("utf-8"))
 
     if not isinstance(payload, list):
-        raise RuntimeError("Metered TURN credentials response was invalid")
+        logger.warning("Metered TURN credentials response was invalid: %s", payload)
+        return []
 
     return [_to_rtc_ice_server(item) for item in payload if isinstance(item, dict)]
 
 
 async def get_ice_servers() -> list[RTCIceServer]:
-    metered_servers = await asyncio.to_thread(_fetch_metered_ice_servers_sync)
-    if metered_servers:
-        return metered_servers
+    try:
+        metered_servers = await asyncio.to_thread(_fetch_metered_ice_servers_sync)
+        if metered_servers:
+            return metered_servers
+    except Exception:
+        logger.exception("Failed to fetch Metered TURN credentials; falling back to default ICE servers")
 
     stun_urls = _split_urls(
         os.getenv(
