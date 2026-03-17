@@ -1,0 +1,8 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+aiortc==1.10.1
+python-dotenv==1.0.1
+pydantic==2.10.6
+numpy==2.2.4
+opencv-python-headless==4.11.0.86
+av==14.2.0

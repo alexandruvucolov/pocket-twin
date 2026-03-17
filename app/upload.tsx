@@ -28,7 +28,11 @@ import {
   getFirebaseErrorMessage,
   uploadAvatarImage,
 } from "@/lib/firebase";
-import { createTalk, pollTalk, uploadImageToDID } from "@/lib/did";
+import {
+  createLivePortraitVideo,
+  getDefaultLivePortraitDrivingVideoUrl,
+  isLivePortraitConfigured,
+} from "@/lib/liveportrait";
 import { useVideoPlayer, VideoView } from "expo-video";
 
 const { width, height } = Dimensions.get("window");
@@ -168,29 +172,44 @@ export default function UploadScreen() {
 
       let resultVideoUrl: string | undefined;
 
-      if (firebaseEnabled && user) {
-        try {
-          const didImageUrl = await uploadImageToDID(imageUri);
-          const talkId = await createTalk(didImageUrl);
-          resultVideoUrl = await pollTalk(talkId, (pct) => setProgress(pct));
-          setProgress(100);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[D-ID] Animation failed:", msg);
-          Alert.alert(
-            "Animation failed",
-            `Could not animate your avatar: ${msg}\n\nYour avatar was still saved.`,
-            [{ text: "OK" }],
-          );
-          setProgress(100);
-        }
+      if (
+        isLivePortraitConfigured() &&
+        firebaseEnabled &&
+        user &&
+        /^https?:\/\//i.test(finalImageUri) &&
+        getDefaultLivePortraitDrivingVideoUrl()
+      ) {
+        resultVideoUrl = await createLivePortraitVideo({
+          sourceImageUrl: finalImageUri,
+          onStatus: (message) => {
+            if (message.includes("Submitting")) {
+              setProgress(58);
+              return;
+            }
+
+            if (message.includes("in_queue")) {
+              setProgress(66);
+              return;
+            }
+
+            if (message.includes("in_progress")) {
+              setProgress(82);
+              return;
+            }
+
+            if (message.includes("completed")) {
+              setProgress(96);
+            }
+          },
+        });
       } else {
-        // Dev / no Firebase — fake progress so UI still animates
-        for (const p of [60, 75, 90, 100]) {
-          await new Promise((r) => setTimeout(r, 400));
+        for (const p of [65, 80, 100]) {
+          await new Promise((r) => setTimeout(r, 200));
           setProgress(p);
         }
       }
+
+      setProgress(100);
 
       setVideoUrl(resultVideoUrl ?? null);
 

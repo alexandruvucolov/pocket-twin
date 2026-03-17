@@ -42,11 +42,8 @@ export const auth = app
         return initializeAuth(app, {
           persistence: getReactNativePersistence(AsyncStorage),
         });
-      } catch (err) {
-        console.log(
-          "[Firebase] initializeAuth threw, using getAuth(). Error:",
-          err,
-        );
+      } catch {
+        // auth/already-initialized on hot reload — safe to ignore
         return getAuth(app);
       }
     })()
@@ -70,6 +67,29 @@ function getContentTypeFromUri(uri: string) {
   return "image/jpeg";
 }
 
+function getAssetContentTypeFromUri(uri: string) {
+  const normalizedUri = uri.toLowerCase();
+
+  if (
+    normalizedUri.endsWith(".jpg") ||
+    normalizedUri.endsWith(".jpeg") ||
+    normalizedUri.endsWith(".png") ||
+    normalizedUri.endsWith(".webp") ||
+    normalizedUri.endsWith(".heic") ||
+    normalizedUri.endsWith(".heif")
+  ) {
+    return getContentTypeFromUri(uri);
+  }
+
+  if (normalizedUri.endsWith(".wav")) return "audio/wav";
+  if (normalizedUri.endsWith(".mp3")) return "audio/mpeg";
+  if (normalizedUri.endsWith(".m4a") || normalizedUri.endsWith(".mp4")) {
+    return "audio/mp4";
+  }
+
+  return "application/octet-stream";
+}
+
 async function readImageAsBase64(uri: string) {
   try {
     return await FileSystem.readAsStringAsync(uri, {
@@ -88,8 +108,8 @@ async function compressImage(uri: string): Promise<string> {
   try {
     const result = await ImageManipulator.manipulateAsync(
       uri,
-      [{ resize: { width: 1024 } }],
-      { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG },
+      [{ resize: { width: 800 } }],
+      { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG },
     );
     return result.uri;
   } catch {
@@ -119,41 +139,75 @@ async function uploadStringWithoutBlobSupport(
   }
 }
 
-export async function uploadAvatarImage(params: {
-  userId: string;
-  avatarId: string;
+async function uploadLocalFile(params: {
+  storagePath: string;
   localUri: string;
+  contentType?: string;
+  compressImage?: boolean;
 }) {
   if (!storage) {
     throw new Error("Firebase Storage is not configured.");
   }
 
-  const fileRef = ref(
-    storage,
-    `users/${params.userId}/avatars/${params.avatarId}/profile.jpg`,
+  const fileRef = ref(storage, params.storagePath);
+  const uploadUri = params.compressImage
+    ? await compressImage(params.localUri)
+    : params.localUri;
+  const base64 = await readImageAsBase64(uploadUri);
+
+  await uploadStringWithoutBlobSupport(
+    fileRef,
+    base64,
+    params.contentType ?? getAssetContentTypeFromUri(params.localUri),
   );
 
-  const compressed = await compressImage(params.localUri);
-  const base64 = await readImageAsBase64(compressed);
-  await uploadStringWithoutBlobSupport(fileRef, base64, "image/jpeg");
-
   return getDownloadURL(fileRef);
+}
+
+export async function uploadAvatarImage(params: {
+  userId: string;
+  avatarId: string;
+  localUri: string;
+}) {
+  return uploadLocalFile({
+    storagePath: `users/${params.userId}/avatars/${params.avatarId}/profile.jpg`,
+    localUri: params.localUri,
+    contentType: "image/jpeg",
+    compressImage: true,
+  });
 }
 
 export async function uploadProfilePhoto(params: {
   userId: string;
   localUri: string;
 }) {
-  if (!storage) {
-    throw new Error("Firebase Storage is not configured.");
-  }
+  return uploadLocalFile({
+    storagePath: `users/${params.userId}/photo.jpg`,
+    localUri: params.localUri,
+    contentType: "image/jpeg",
+    compressImage: true,
+  });
+}
 
-  const fileRef = ref(storage, `users/${params.userId}/photo.jpg`);
-  const compressed = await compressImage(params.localUri);
-  const base64 = await readImageAsBase64(compressed);
-  await uploadStringWithoutBlobSupport(fileRef, base64, "image/jpeg");
+export async function uploadAvatarAudio(params: {
+  userId: string;
+  avatarId: string;
+  replyId: string;
+  localUri: string;
+}) {
+  const extension =
+    params.localUri
+      .split(".")
+      .pop()
+      ?.toLowerCase()
+      .replace(/[^a-z0-9]/g, "") || "m4a";
 
-  return getDownloadURL(fileRef);
+  return uploadLocalFile({
+    storagePath: `users/${params.userId}/avatars/${params.avatarId}/audio/${params.replyId}.${extension}`,
+    localUri: params.localUri,
+    contentType: getAssetContentTypeFromUri(params.localUri),
+    compressImage: false,
+  });
 }
 
 export function getFirebaseErrorMessage(

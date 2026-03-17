@@ -20,6 +20,7 @@ import {
 } from "firebase/firestore";
 import { DUMMY_AVATARS, DUMMY_MESSAGES } from "../constants/dummy";
 import { db, firebaseEnabled } from "../lib/firebase";
+import { getChatReply } from "../lib/openai";
 import { Avatar, ChatMessage } from "../types/avatar";
 import { useAuth } from "./AuthContext";
 
@@ -33,22 +34,11 @@ interface AvatarContextType {
   addMessage: (avatarId: string, msg: ChatMessage) => void;
   addCoins: (amount: number) => void;
   spendCoin: () => boolean;
-  sendMessage: (avatarId: string, text: string) => Promise<void>;
+  sendMessage: (avatarId: string, text: string) => Promise<string>;
   updateAvatarVideoUrl: (avatarId: string, videoUrl: string) => void;
 }
 
 const AvatarContext = createContext<AvatarContextType | undefined>(undefined);
-
-const DUMMY_RESPONSES = [
-  "That's a great point! I completely agree with you.",
-  "Hmm, let me think about that... I think the key is to stay curious and keep exploring.",
-  "You know what? I've been thinking the same thing lately.",
-  "That reminds me of something fascinating—the more you learn, the more questions arise!",
-  "Absolutely! Life is all about those little moments of connection.",
-  "I love that question! The honest answer is: it depends entirely on perspective.",
-  "You're onto something really interesting there. Tell me more?",
-  "Ha! I wasn't expecting that, but I love it. You always keep me on my toes.",
-];
 
 function toDate(value: unknown) {
   if (!value) return undefined;
@@ -322,14 +312,32 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     }).catch(() => undefined);
   };
 
-  const sendMessage = async (avatarId: string, text: string) => {
-    addMessage(avatarId, { role: "user", text });
-    await new Promise((resolve) =>
-      setTimeout(resolve, 800 + Math.random() * 800),
-    );
-    const response =
-      DUMMY_RESPONSES[Math.floor(Math.random() * DUMMY_RESPONSES.length)];
-    addMessage(avatarId, { role: "avatar", text: response });
+  const sendMessage = async (
+    avatarId: string,
+    text: string,
+  ): Promise<string> => {
+    // Add user message immediately so it appears in the UI
+    const userMsg: ChatMessage = { role: "user", text };
+    addMessage(avatarId, userMsg);
+
+    const avatar = avatars.find((a) => a.id === avatarId);
+    const avatarName = avatar?.name ?? "your avatar";
+
+    // Build history including the new user message
+    const history = [...(messages[avatarId] ?? []), userMsg];
+
+    try {
+      const reply = await getChatReply(avatarName, history);
+      addMessage(avatarId, { role: "avatar", text: reply });
+      return reply;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[OpenAI] sendMessage error:", msg);
+      const fallback =
+        "Sorry, I couldn't respond right now. Try again in a moment.";
+      addMessage(avatarId, { role: "avatar", text: fallback });
+      return fallback;
+    }
   };
 
   return (
