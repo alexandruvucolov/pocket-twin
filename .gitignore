@@ -38,6 +38,10 @@ d-id_key.txt
 # typescript
 *.tsbuildinfo
 
+# python
+__pycache__/
+*.pyc
+
 # generated native folders
 /ios
 /android
