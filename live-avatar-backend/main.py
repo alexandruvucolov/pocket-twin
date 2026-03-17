@@ -20,6 +20,7 @@ from aiortc import (
 from aiortc.sdp import candidate_from_sdp
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from audio2face import Audio2FaceClient
 from dotenv import load_dotenv
 from runtime import LoopingVideoTrack, PlaceholderTrack, SESSIONS, close_session, get_session, load_source_frame
 from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
@@ -27,6 +28,7 @@ from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+A2F_CLIENT = Audio2FaceClient()
 PENDING_ICE_CANDIDATES: dict[
     str,
     list[dict[str, str | int | None]],
@@ -362,6 +364,16 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
     SESSIONS[session_id] = (pc, track)
     PENDING_ICE_CANDIDATES[session_id] = []
 
+    if A2F_CLIENT.is_configured:
+        try:
+            await asyncio.to_thread(
+                A2F_CLIENT.notify_session_started,
+                session_id,
+                body.model_dump(),
+            )
+        except Exception:
+            logger.exception("Audio2Face session bootstrap failed for %s", session_id)
+
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
     await _wait_for_ice_gathering_complete(pc)
@@ -419,11 +431,25 @@ async def submit_ice(session_id: str, body: IceBody) -> dict[str, bool | str]:
 async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
     _, track = get_session(session_id)
     track.set_text(body.text)
+
+    if A2F_CLIENT.is_configured:
+        try:
+            await asyncio.to_thread(A2F_CLIENT.speak, session_id, body.text)
+        except Exception:
+            logger.exception("Audio2Face speak sync failed for %s", session_id)
+
     return {"ok": True, "sessionId": session_id}
 
 
 @app.delete("/api/live-avatar/sessions/{session_id}")
 async def delete_session(session_id: str) -> dict[str, bool | str]:
     PENDING_ICE_CANDIDATES.pop(session_id, None)
+
+    if A2F_CLIENT.is_configured:
+        try:
+            await asyncio.to_thread(A2F_CLIENT.close_session, session_id)
+        except Exception:
+            logger.exception("Audio2Face close sync failed for %s", session_id)
+
     await close_session(session_id)
     return {"ok": True, "sessionId": session_id}
