@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 from urllib.request import urlopen
 
@@ -137,10 +138,59 @@ class PlaceholderTrack(VideoStreamTrack):
         return frame
 
 
-SESSIONS: dict[str, tuple[RTCPeerConnection, PlaceholderTrack]] = {}
+class LoopingVideoTrack(VideoStreamTrack):
+    def __init__(self, video_path: str):
+        super().__init__()
+        self.video_path = video_path
+        self.capture = cv2.VideoCapture(video_path)
+        self.label = "live"
+
+    def set_text(self, text: str) -> None:
+        self.label = (text or "live").strip()[:120]
+
+    def _read_frame(self) -> np.ndarray:
+        if not self.capture.isOpened():
+            self.capture.open(self.video_path)
+
+        ok, frame = self.capture.read()
+        if ok and frame is not None:
+            return cv2.resize(frame, (512, 512), interpolation=cv2.INTER_LINEAR)
+
+        self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ok, frame = self.capture.read()
+        if ok and frame is not None:
+            return cv2.resize(frame, (512, 512), interpolation=cv2.INTER_LINEAR)
+
+        return np.zeros((512, 512, 3), dtype=np.uint8)
+
+    async def recv(self) -> av.VideoFrame:
+        pts, time_base = await self.next_timestamp()
+        image = self._read_frame()
+        frame = av.VideoFrame.from_ndarray(
+            cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+            format="rgb24",
+        )
+        frame.pts = pts
+        frame.time_base = time_base
+        return frame
+
+    def cleanup(self) -> None:
+        try:
+            self.capture.release()
+        except Exception:
+            pass
+        try:
+            os.remove(self.video_path)
+        except Exception:
+            pass
 
 
-def get_session(session_id: str) -> tuple[RTCPeerConnection, PlaceholderTrack]:
+SESSIONS: dict[str, tuple[RTCPeerConnection, PlaceholderTrack | LoopingVideoTrack]] = {}
+
+
+def get_session(
+    session_id: str,
+) -> tuple[RTCPeerConnection, PlaceholderTrack | LoopingVideoTrack]:
     session = SESSIONS.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -150,4 +200,7 @@ def get_session(session_id: str) -> tuple[RTCPeerConnection, PlaceholderTrack]:
 async def close_session(session_id: str) -> None:
     session = SESSIONS.pop(session_id, None)
     if session:
+        cleanup = getattr(session[1], "cleanup", None)
+        if callable(cleanup):
+            cleanup()
         await session[0].close()

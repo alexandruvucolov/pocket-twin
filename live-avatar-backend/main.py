@@ -5,9 +5,10 @@ import json
 import logging
 import os
 import ssl
+import tempfile
 from typing import Any
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from aiortc import (
@@ -20,7 +21,7 @@ from aiortc.sdp import candidate_from_sdp
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from runtime import PlaceholderTrack, SESSIONS, close_session, get_session, load_source_frame
+from runtime import LoopingVideoTrack, PlaceholderTrack, SESSIONS, close_session, get_session, load_source_frame
 from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 
 
@@ -60,6 +61,130 @@ def _load_explicit_ice_servers() -> list[RTCIceServer]:
         raise RuntimeError("LIVE_AVATAR_ICE_SERVERS_JSON must be a JSON array")
 
     return [_to_rtc_ice_server(item) for item in payload if isinstance(item, dict)]
+
+
+def _pick_string(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _extract_video_url(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+
+    direct = (
+        _pick_string(value.get("video_url"))
+        or _pick_string(value.get("videoUrl"))
+        or _pick_string(value.get("result_url"))
+        or _pick_string(value.get("resultUrl"))
+        or _pick_string(value.get("url"))
+        or _pick_string(value.get("mp4_url"))
+        or _pick_string(value.get("mp4Url"))
+    )
+    if direct:
+        return direct
+
+    for nested_key in ("output", "result", "data"):
+        nested = _extract_video_url(value.get(nested_key))
+        if nested:
+            return nested
+
+    return None
+
+
+def _get_runpod_config() -> tuple[str, str, str | None] | None:
+    api_key = os.getenv("LIVE_AVATAR_RUNPOD_API_KEY", "").strip()
+    endpoint_id = os.getenv("LIVE_AVATAR_RUNPOD_LIVEPORTRAIT_ENDPOINT_ID", "").strip()
+    base_url = os.getenv("LIVE_AVATAR_RUNPOD_BASE_URL", "https://api.runpod.ai/v2").strip()
+    driving_video_url = os.getenv("LIVE_AVATAR_DRIVING_VIDEO_URL", "").strip() or None
+    if not api_key or not endpoint_id:
+        return None
+    return api_key, f"{base_url.rstrip('/')}/{endpoint_id}", driving_video_url
+
+
+def _submit_runpod_job(source_image_url: str, driving_video_url: str | None) -> str:
+    config = _get_runpod_config()
+    if not config:
+        raise RuntimeError("Runpod LivePortrait is not configured")
+
+    api_key, endpoint_url, default_driving_video_url = config
+    payload = {
+        "input": {
+            "source_image_url": source_image_url,
+            "output_format": "mp4",
+            **(
+                {"driving_video_url": driving_video_url or default_driving_video_url}
+                if (driving_video_url or default_driving_video_url)
+                else {}
+            ),
+        }
+    }
+    request = Request(
+        f"{endpoint_url}/run",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "accept": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        body = json.loads(response.read().decode("utf-8"))
+
+    job_id = _pick_string(body.get("id")) if isinstance(body, dict) else None
+    if not job_id:
+        raise RuntimeError(f"Runpod job submission failed: {body}")
+    return job_id
+
+
+def _wait_for_runpod_video(job_id: str) -> str:
+    config = _get_runpod_config()
+    if not config:
+        raise RuntimeError("Runpod LivePortrait is not configured")
+
+    api_key, endpoint_url, _ = config
+    for _attempt in range(90):
+        request = Request(
+            f"{endpoint_url}/status/{job_id}",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "accept": "application/json",
+            },
+            method="GET",
+        )
+        with urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+
+        status = _pick_string(body.get("status")) if isinstance(body, dict) else None
+        if status == "COMPLETED":
+            video_url = _extract_video_url(body)
+            if video_url:
+                return video_url
+            raise RuntimeError(f"Runpod job completed without video_url: {body}")
+        if status in {"FAILED", "CANCELLED", "TIMED_OUT"}:
+            raise RuntimeError(f"Runpod job {status.lower()}: {body}")
+        time.sleep(2)
+
+    raise RuntimeError("Runpod LivePortrait job timed out")
+
+
+def _download_video_to_tempfile(video_url: str) -> str:
+    with urlopen(video_url, timeout=60) as response:
+        payload = response.read()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
+        temp_file.write(payload)
+        return temp_file.name
+
+
+def _prepare_liveportrait_video(source_image_url: str) -> str:
+    config = _get_runpod_config()
+    if not config:
+        raise RuntimeError("Runpod LivePortrait is not configured")
+    _api_key, _endpoint_url, driving_video_url = config
+    job_id = _submit_runpod_job(source_image_url, driving_video_url)
+    video_url = _wait_for_runpod_video(job_id)
+    return _download_video_to_tempfile(video_url)
 
 
 def _fetch_metered_ice_servers_sync() -> list[RTCIceServer]:
@@ -217,7 +342,22 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
     except Exception:
         logger.exception("Failed to load avatar source image for session %s", session_id)
 
-    track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
+    track: PlaceholderTrack | LoopingVideoTrack
+    if body.sourceImageUrl and _get_runpod_config():
+        try:
+            liveportrait_video_path = await asyncio.to_thread(
+                _prepare_liveportrait_video,
+                body.sourceImageUrl,
+            )
+            track = LoopingVideoTrack(liveportrait_video_path)
+        except Exception:
+            logger.exception(
+                "Failed to prepare LivePortrait video for session %s; falling back to image animation",
+                session_id,
+            )
+            track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
+    else:
+        track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
     pc.addTrack(track)
     SESSIONS[session_id] = (pc, track)
     PENDING_ICE_CANDIDATES[session_id] = []
