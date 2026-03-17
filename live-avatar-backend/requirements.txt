@@ -5,4 +5,4 @@ python-dotenv==1.0.1
 pydantic==2.10.6
 numpy==2.2.4
 opencv-python-headless==4.11.0.86
-av==14.2.0
+av==13.1.0
