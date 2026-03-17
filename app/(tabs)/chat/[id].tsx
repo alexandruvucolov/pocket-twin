@@ -511,9 +511,14 @@ export default function ChatScreen() {
           return;
         }
 
+        event.track.enabled = true;
+        const incomingStream = event.streams?.[0] ?? null;
+
         const attachRemoteTrack = () => {
-          const nextStream = new MediaStream();
-          nextStream.addTrack(event.track);
+          const nextStream = incomingStream ?? new MediaStream();
+          if (!incomingStream) {
+            nextStream.addTrack(event.track);
+          }
           setLiveRemoteStream(nextStream);
           setIsLiveMode(true);
           setLiveStatusText("Live");
@@ -566,6 +571,25 @@ export default function ChatScreen() {
         void submitCurrentLiveIceCandidate(session, payload).catch((err) => {
           console.warn("[Live Avatar] ICE error:", err);
         });
+      };
+
+      peerConnection.oniceconnectionstatechange = () => {
+        const nextState = peerConnection.iceConnectionState;
+        if (nextState === "checking") {
+          setLiveStatusText("Connecting…");
+          return;
+        }
+
+        if (nextState === "connected" || nextState === "completed") {
+          setLiveStatusText("Live");
+          setIsLiveConnecting(false);
+          return;
+        }
+
+        if (nextState === "failed") {
+          setIsLiveMode(false);
+          setLiveStatusText("ICE failed");
+        }
       };
 
       await peerConnection.setRemoteDescription(
