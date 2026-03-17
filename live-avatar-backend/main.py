@@ -50,6 +50,18 @@ def _to_rtc_ice_server(value: dict[str, Any]) -> RTCIceServer:
     )
 
 
+def _load_explicit_ice_servers() -> list[RTCIceServer]:
+    raw_value = os.getenv("LIVE_AVATAR_ICE_SERVERS_JSON", "").strip()
+    if not raw_value:
+        return []
+
+    payload = json.loads(raw_value)
+    if not isinstance(payload, list):
+        raise RuntimeError("LIVE_AVATAR_ICE_SERVERS_JSON must be a JSON array")
+
+    return [_to_rtc_ice_server(item) for item in payload if isinstance(item, dict)]
+
+
 def _fetch_metered_ice_servers_sync() -> list[RTCIceServer]:
     domain = os.getenv("LIVE_AVATAR_METERED_DOMAIN", "").strip()
     api_key = os.getenv("LIVE_AVATAR_METERED_API_KEY", "").strip()
@@ -82,6 +94,13 @@ def _fetch_metered_ice_servers_sync() -> list[RTCIceServer]:
 
 
 async def get_ice_servers() -> list[RTCIceServer]:
+    try:
+        explicit_ice_servers = _load_explicit_ice_servers()
+        if explicit_ice_servers:
+            return explicit_ice_servers
+    except Exception:
+        logger.exception("Failed to parse LIVE_AVATAR_ICE_SERVERS_JSON")
+
     try:
         metered_servers = await asyncio.to_thread(_fetch_metered_ice_servers_sync)
         if metered_servers:
