@@ -432,62 +432,49 @@ class PlaceholderTrack(VideoStreamTrack):
         natural_gap: float = ld["natural_gap"]
         lip_mid_y = (upper_y + lower_y) / 2.0
 
-        # Total opening: guaranteed minimum based on lip width so closed-mouth
-        # avatars still get visible movement (natural_gap can be ~2px when closed).
-        max_delta = max(natural_gap * 5.0, lip_width * 0.55) + 32.0
-        gap_delta = mouth_open * max_delta
+        # Max opening: enough to be visible on any face, incl. closed-mouth photos
+        max_shift = max(natural_gap * 4.0, lip_width * 0.48) + 28.0
+        gap_delta = mouth_open * max_shift  # used later for shadow sizing
 
-        upper_shift = gap_delta * 0.42   # upper lip travels upward
-        lower_shift = gap_delta * 0.58   # lower lip travels downward
-
-        # Influence radii
-        sigma_x   = lip_width * 0.52
-        sigma_y_u = max(lip_width * 0.34, 10.0)
-        sigma_y_d = max(lip_width * 0.38, 12.0)
+        # ── Antisymmetric tanh warp field ─────────────────────────────────────
+        # The ONLY correct way to split lips in a reverse-map without duplication:
+        #
+        #   displacement(y) = +max_shift  when y is at upper_y  (sample from below → pixel goes up)
+        #   displacement(y) =  0          when y is at lip_mid_y (midline stays fixed)
+        #   displacement(y) = -max_shift  when y is at lower_y  (sample from above → pixel goes down)
+        #
+        # tanh transitions smoothly, is strictly antisymmetric, and is zero exactly
+        # at the midline — so the midline pixels are NEVER duplicated.
+        transition_h = max((lower_y - upper_y) * 0.55, lip_width * 0.14, 4.0)
+        sigma_x      = lip_width * 0.52
+        sigma_env    = max(lip_width * 0.62, 18.0)   # vertical envelope around mouth
 
         grid_x, grid_y = np.meshgrid(
             np.arange(image_w, dtype=np.float32),
             np.arange(image_h, dtype=np.float32),
         )
 
-        # Horizontal weight centred on lip midpoint
-        wx = np.exp(-0.5 * ((grid_x - center_x) / sigma_x) ** 2)
+        wx       = np.exp(-0.5 * ((grid_x - center_x) / sigma_x) ** 2)
+        wy_env   = np.exp(-0.5 * ((grid_y - lip_mid_y) / sigma_env) ** 2)
 
-        # Half-space masks: sigmoid split at lip_mid_y so the two Gaussians
-        # never overlap. Pixels above mid only feel the upper lip pull; pixels
-        # below mid only feel the lower lip pull. This is what creates a real
-        # opening instead of the whole mouth shifting as one block.
-        split_sharpness = max(natural_gap * 0.6, 2.5)
-        upper_half = 1.0 / (1.0 + np.exp( (grid_y - lip_mid_y) / split_sharpness))  # ~1 above mid, ~0 below
-        lower_half = 1.0 - upper_half                                                 # ~0 above mid, ~1 below
+        # antisym: +1 at upper_y, 0 at mid, -1 at lower_y
+        antisym  = np.tanh((lip_mid_y - grid_y) / (transition_h + 1e-6))
+        lip_disp = mouth_open * max_shift * antisym * wx * wy_env
 
-        # ── Upper lip Gaussian: centred AT upper_y, confined to upper half ────
-        wy_upper = np.exp(-0.5 * ((grid_y - upper_y) / sigma_y_u) ** 2)
-        upper_weight = wx * wy_upper * upper_half
-
-        # ── Lower lip Gaussian: centred AT lower_y, confined to lower half ────
-        wy_lower = np.exp(-0.5 * ((grid_y - lower_y) / sigma_y_d) ** 2)
-        lower_weight = wx * wy_lower * lower_half
-
-        # Jaw/chin drop: chin skin below the lips shifts slightly downward
+        # Jaw/chin drop (strictly below lower lip, no overlap with lip zone)
         sigma_y_jaw  = max(lip_width * 0.55, 14.0)
         jaw_center_y = lower_y + max(lip_width * 0.45, 12.0)
-        wy_jaw  = np.exp(-0.5 * ((grid_y - jaw_center_y) / sigma_y_jaw) ** 2)
-        jaw_weight = wx * wy_jaw * np.clip((grid_y - lower_y) / (sigma_y_jaw + 1e-6), 0.0, 1.0)
-        jaw_shift  = mouth_open * max(lip_width * 0.07, 3.0)
+        wy_jaw    = np.exp(-0.5 * ((grid_y - jaw_center_y) / sigma_y_jaw) ** 2)
+        jaw_mask  = np.clip((grid_y - lower_y) / (sigma_y_jaw + 1e-6), 0.0, 1.0)
+        jaw_disp  = mouth_open * max(lip_width * 0.07, 3.0) * wx * wy_jaw * jaw_mask
 
-        # Reverse-map: "to draw output pixel (y,x), fetch source from (warp_y, warp_x)"
-        #   upper lip moves UP  → sample from further down  → warp_y += upper_shift
-        #   lower lip moves DOWN → sample from further up   → warp_y -= lower_shift
-        #   chin shifts down    → sample from further up    → warp_y -= jaw_shift
-        warp_y = grid_y + upper_weight * upper_shift - lower_weight * lower_shift - jaw_weight * jaw_shift
+        warp_y = grid_y + lip_disp - jaw_disp
 
-        # Horizontal corner spread: as mouth opens, corners pull outward slightly
+        # Horizontal corner spread: corners pull outward slightly as mouth opens
         sigma_y_corner = max(lip_width * 0.18, 5.0)
-        corner_band = np.exp(-0.5 * ((grid_y - lip_mid_y) / sigma_y_corner) ** 2)
-        # normalised ±1 at each corner, 0 at centre
-        corner_nx = (grid_x - center_x) / (lip_width * 0.5 + 1e-6)
-        warp_x = grid_x - wx * corner_band * corner_nx * mouth_open * 3.5
+        corner_band    = np.exp(-0.5 * ((grid_y - lip_mid_y) / sigma_y_corner) ** 2)
+        corner_nx      = (grid_x - center_x) / (lip_width * 0.5 + 1e-6)
+        warp_x         = grid_x - wx * corner_band * corner_nx * mouth_open * 3.5
 
         result = cv2.remap(
             image,
