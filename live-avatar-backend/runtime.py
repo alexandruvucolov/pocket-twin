@@ -154,6 +154,100 @@ class PlaceholderTrack(VideoStreamTrack):
         image[top : top + mouth_h, 176:336] = (255, 0, 0)
         return image
 
+    def _apply_mouth_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
+        if mouth_open <= 0.01:
+            return image
+
+        result = image.copy()
+        center_x = 256
+        center_y = 360
+        half_width = 84
+        half_height = 30
+
+        x1 = max(center_x - half_width, 0)
+        x2 = min(center_x + half_width, image.shape[1])
+        y1 = max(center_y - half_height, 0)
+        y2 = min(center_y + half_height, image.shape[0])
+        roi = image[y1:y2, x1:x2].copy()
+        if roi.size == 0:
+            return result
+
+        roi_h, roi_w = roi.shape[:2]
+        lip_band = max(6, roi_h // 5)
+        top_lip = roi[:lip_band].copy()
+        bottom_lip = roi[-lip_band:].copy()
+
+        gap = int(6 + mouth_open * 26)
+        inner_top = min(lip_band + gap, roi_h)
+        inner_bottom = max(roi_h - lip_band - gap, 0)
+
+        roi[:] = cv2.GaussianBlur(roi, (0, 0), 1.1)
+
+        top_start = max((inner_top - lip_band) // 2, 0)
+        top_end = min(top_start + lip_band, roi_h)
+        bottom_start = max(inner_bottom + (roi_h - inner_bottom - lip_band) // 2, 0)
+        bottom_end = min(bottom_start + lip_band, roi_h)
+
+        roi[top_start:top_end] = cv2.addWeighted(
+            roi[top_start:top_end],
+            0.18,
+            top_lip[: top_end - top_start],
+            0.82,
+            0,
+        )
+        roi[bottom_start:bottom_end] = cv2.addWeighted(
+            roi[bottom_start:bottom_end],
+            0.18,
+            bottom_lip[: bottom_end - bottom_start],
+            0.82,
+            0,
+        )
+
+        cavity_top = min(top_end, roi_h)
+        cavity_bottom = max(bottom_start, cavity_top)
+        if cavity_bottom > cavity_top:
+            cavity_h = cavity_bottom - cavity_top
+            gradient = np.linspace(0.25, 1.0, cavity_h, dtype=np.float32)[:, None]
+            cavity = np.zeros((cavity_h, roi_w, 3), dtype=np.float32)
+            cavity[..., 0] = 16 + 30 * gradient
+            cavity[..., 1] = 10 + 10 * gradient
+            cavity[..., 2] = 30 + 45 * gradient
+            existing = roi[cavity_top:cavity_bottom].astype(np.float32)
+            alpha = 0.55 + mouth_open * 0.25
+            roi[cavity_top:cavity_bottom] = np.clip(
+                existing * (1.0 - alpha) + cavity * alpha,
+                0,
+                255,
+            ).astype(np.uint8)
+
+            tooth_h = max(2, int(cavity_h * 0.18))
+            tooth_y = cavity_top + max(1, int(cavity_h * 0.08))
+            tooth_margin = max(10, roi_w // 6)
+            roi[tooth_y:tooth_y + tooth_h, tooth_margin:roi_w - tooth_margin] = cv2.addWeighted(
+                roi[tooth_y:tooth_y + tooth_h, tooth_margin:roi_w - tooth_margin],
+                0.25,
+                np.full((tooth_h, roi_w - 2 * tooth_margin, 3), 230, dtype=np.uint8),
+                0.75,
+                0,
+            )
+
+        lip_shadow = result.copy()
+        shadow_alpha = 0.08 + mouth_open * 0.1
+        cv2.ellipse(
+            lip_shadow,
+            (center_x, center_y),
+            (half_width - 6, max(10, int(10 + mouth_open * 8))),
+            0,
+            0,
+            360,
+            (20, 20, 40),
+            2,
+        )
+        cv2.addWeighted(lip_shadow, shadow_alpha, result, 1.0 - shadow_alpha, 0, result)
+
+        result[y1:y2, x1:x2] = roi
+        return result
+
     def _render_avatar(self, now: float, mouth_open: float) -> np.ndarray:
         speaking = mouth_open > 0.02
         if self.source_frame is None:
@@ -179,30 +273,12 @@ class PlaceholderTrack(VideoStreamTrack):
         offset_y = max(0, min(offset_y, max_y))
         image = scaled[offset_y : offset_y + 512, offset_x : offset_x + 512].copy()
 
-        overlay = image.copy()
-        mouth_center = (256, 360)
-        mouth_width = 116
-        mouth_height = 10 + int(mouth_open * 42)
-        mouth_alpha = 0.16 + mouth_open * 0.18
-
-        cv2.ellipse(
-            overlay,
-            mouth_center,
-            (mouth_width // 2, max(mouth_height // 2, 8)),
-            0,
-            0,
-            360,
-            (30, 30, 120),
-            -1,
-        )
-        cv2.addWeighted(overlay, mouth_alpha, image, 1 - mouth_alpha, 0, image)
-
         if speaking:
             highlight = image.copy()
             cv2.circle(highlight, (256, 356), 72, (90, 90, 180), -1)
             cv2.addWeighted(highlight, 0.08, image, 0.92, 0, image)
 
-        return image
+        return self._apply_mouth_warp(image, mouth_open)
 
     async def recv(self) -> av.VideoFrame:
         pts, time_base = await self.next_timestamp()
