@@ -138,12 +138,41 @@ This repo now includes two helpers:
 
 - [live-avatar-a2f-upstream/write_runpod_env.sh](write_runpod_env.sh)
 - [live-avatar-a2f-upstream/start_upstream.sh](start_upstream.sh)
+- [live-avatar-a2f-upstream/setup_runpod_sdk.sh](setup_runpod_sdk.sh)
 
 Minimal Runpod flow:
 
 1. build the bridge
 2. write `.env`
 3. start the upstream service
+
+## One-shot Runpod bootstrap
+
+If you want the full GPU-side setup from scratch on a fresh Runpod pod, use:
+
+```bash
+cd live-avatar-a2f-upstream
+chmod +x setup_runpod_sdk.sh
+sudo A2F_START_UPSTREAM=true ./setup_runpod_sdk.sh
+```
+
+What it does:
+
+1. installs base Linux packages such as `git-lfs` and `ffmpeg`
+2. clones `NVIDIA/Audio2Face-3D-SDK` into `/workspace/Audio2Face-3D-SDK`
+3. builds the SDK
+4. logs into Hugging Face and downloads the gated models
+5. generates the required `audio2face-3d-v3.0/network.trt`
+6. builds the Pocket Twin bridge
+7. writes `.env`
+8. optionally starts the upstream service
+
+Notes:
+
+- export `TENSORRT_ROOT_DIR` before running if TensorRT is not in `/opt/tensorrt`
+- export `CUDA_PATH` before running if CUDA is not in `/usr/local/cuda-12.8`
+- export `A2F_HF_TOKEN` to avoid the interactive Hugging Face login prompt
+- set `A2F_RUN_FULL_GEN_TESTDATA=true` if you want the full SDK test-data generation instead of only the minimal `network.trt`
 
 ## Recommended env values on Runpod
 

@@ -434,7 +434,16 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
 
     if A2F_CLIENT.is_configured:
         try:
-            await asyncio.to_thread(A2F_CLIENT.speak, session_id, body.text)
+            response = await asyncio.to_thread(A2F_CLIENT.speak, session_id, body.text)
+            if isinstance(response, dict):
+                session_payload = response.get("session")
+                if isinstance(session_payload, dict):
+                    output_dir = session_payload.get("lastOutputDir")
+                    load_motion = getattr(track, "load_a2f_motion", None)
+                    if output_dir and callable(load_motion):
+                        loaded = await asyncio.to_thread(load_motion, output_dir)
+                        if loaded:
+                            logger.info("Loaded A2F motion for %s from %s", session_id, output_dir)
         except Exception:
             logger.exception("Audio2Face speak sync failed for %s", session_id)
 

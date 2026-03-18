@@ -31,4 +31,8 @@ class SessionState(BaseModel):
     avatarProfileId: str = Field(default="default-avatar")
     utteranceCount: int = 0
     lastText: str | None = None
+    lastOutputDir: str | None = None
+    lastManifestPath: str | None = None
+    lastExecutionOk: bool | None = None
+    lastExecutionError: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -3,7 +3,9 @@
 
 #include "AudioFile.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -60,11 +62,56 @@ struct Args {
   std::string utterance;
 };
 
+struct FrameMotion {
+  long long timeStampCurrentFrame{0};
+  long long timeStampNextFrame{0};
+  std::vector<float> jawTransform;
+  float mouthOpen{0.0f};
+};
+
 struct CallbackData {
   std::size_t frameCount{0};
   std::vector<long long> timestamps;
   std::vector<long long> nextTimestamps;
+  std::vector<FrameMotion> frames;
 };
+
+std::vector<float> CopyDeviceTensorToHost(nva2x::DeviceTensorFloatConstView source) {
+  std::vector<float> host(source.Size(), 0.0f);
+  if (!host.empty()) {
+    CHECK_RESULT(nva2x::CopyDeviceToHost(
+      nva2x::HostTensorFloatView{host.data(), host.size()},
+      source
+    ));
+  }
+  return host;
+}
+
+float ComputeMouthOpen(const std::vector<float>& jawTransform) {
+  if (jawTransform.empty()) {
+    return 0.0f;
+  }
+
+  static constexpr float identity[] = {
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f,
+  };
+
+  const std::size_t sampleCount = std::min<std::size_t>(jawTransform.size(), 16);
+  float deltaSum = 0.0f;
+  for (std::size_t i = 0; i < sampleCount; ++i) {
+    deltaSum += std::fabs(jawTransform[i] - identity[i]);
+  }
+
+  const float translationY = jawTransform.size() > 13 ? std::fabs(jawTransform[13]) : 0.0f;
+  const float translationZ = jawTransform.size() > 14 ? std::fabs(jawTransform[14]) : 0.0f;
+  const float normalized = (deltaSum / static_cast<float>(sampleCount)) * 4.0f
+    + translationY * 30.0f
+    + translationZ * 20.0f;
+  return std::clamp(normalized, 0.0f, 1.0f);
+}
 
 std::string JsonEscape(const std::string& value) {
   std::ostringstream out;
@@ -231,6 +278,30 @@ void WriteJsonSummary(
   out << "}\n";
 }
 
+void WriteMotionJson(const fs::path& outputPath, const CallbackData& callbackData) {
+  std::ofstream out(outputPath);
+  out << "{\n";
+  out << "  \"ok\": true,\n";
+  out << "  \"frameCount\": " << callbackData.frames.size() << ",\n";
+  out << "  \"frames\": [\n";
+  for (std::size_t i = 0; i < callbackData.frames.size(); ++i) {
+    const auto& frame = callbackData.frames[i];
+    out << "    {\n";
+    out << "      \"timeMs\": " << frame.timeStampCurrentFrame << ",\n";
+    out << "      \"nextTimeMs\": " << frame.timeStampNextFrame << ",\n";
+    out << "      \"mouthOpen\": " << std::fixed << std::setprecision(6) << frame.mouthOpen << ",\n";
+    out << "      \"jawTransform\": [";
+    for (std::size_t j = 0; j < frame.jawTransform.size(); ++j) {
+      if (j) out << ", ";
+      out << frame.jawTransform[j];
+    }
+    out << "]\n";
+    out << "    }" << (i + 1 == callbackData.frames.size() ? "\n" : ",\n");
+  }
+  out << "  ]\n";
+  out << "}\n";
+}
+
 int main(int argc, char** argv) {
   try {
     const auto args = ParseArgs(argc, argv);
@@ -256,6 +327,15 @@ int main(int argc, char** argv) {
       data.frameCount += 1;
       data.timestamps.push_back(static_cast<long long>(results.timeStampCurrentFrame));
       data.nextTimestamps.push_back(static_cast<long long>(results.timeStampNextFrame));
+      auto jawTransform = CopyDeviceTensorToHost(results.jawTransform);
+      data.frames.push_back(FrameMotion{
+        static_cast<long long>(results.timeStampCurrentFrame),
+        static_cast<long long>(results.timeStampNextFrame),
+        std::move(jawTransform),
+        0.0f
+      });
+      auto& frame = data.frames.back();
+      frame.mouthOpen = ComputeMouthOpen(frame.jawTransform);
       return true;
     };
     CHECK_RESULT(bundle->GetExecutor().SetResultsCallback(callback, &callbackData));
@@ -291,6 +371,7 @@ int main(int argc, char** argv) {
       bundle->GetExecutor().GetEyesRotationSize(),
       elapsedMs
     );
+    WriteMotionJson(fs::path(args.outputDir) / "a2f-motion.json", callbackData);
 
     std::cout << "Bridge completed. Frames: " << callbackData.frameCount << std::endl;
     return 0;

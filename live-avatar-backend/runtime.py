@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import time
+from pathlib import Path
 from urllib.request import urlopen
 
 import av
@@ -46,12 +48,68 @@ class PlaceholderTrack(VideoStreamTrack):
         self.label = label
         self.source_frame = source_frame
         self._speech_until = 0.0
+        self._a2f_started_at = 0.0
+        self._a2f_duration_seconds = 0.0
+        self._a2f_frames: list[tuple[float, float]] = []
 
     def set_text(self, text: str) -> None:
         self.label = (text or "live").strip()[:120]
         self._speech_until = time.monotonic() + 4.0
 
-    def _render_placeholder(self, now: float, speaking: bool) -> np.ndarray:
+    def load_a2f_motion(self, output_dir: str | None) -> bool:
+        if not output_dir:
+            return False
+
+        motion_path = Path(output_dir) / "a2f-motion.json"
+        if not motion_path.exists():
+            return False
+
+        payload = json.loads(motion_path.read_text(encoding="utf-8"))
+        frames = payload.get("frames") if isinstance(payload, dict) else None
+        if not isinstance(frames, list) or not frames:
+            return False
+
+        timeline: list[tuple[float, float]] = []
+        for frame in frames:
+            if not isinstance(frame, dict):
+                continue
+            time_ms = frame.get("timeMs")
+            mouth_open = frame.get("mouthOpen")
+            if not isinstance(time_ms, (int, float)) or not isinstance(mouth_open, (int, float)):
+                continue
+            timeline.append((max(float(time_ms), 0.0) / 1000.0, float(np.clip(mouth_open, 0.0, 1.0))))
+
+        if not timeline:
+            return False
+
+        self._a2f_frames = timeline
+        self._a2f_started_at = time.monotonic()
+        self._a2f_duration_seconds = timeline[-1][0]
+        self._speech_until = self._a2f_started_at + max(self._a2f_duration_seconds, 0.25)
+        return True
+
+    def _current_mouth_open(self, now: float) -> float:
+        if self._a2f_frames:
+            elapsed = max(now - self._a2f_started_at, 0.0)
+            if elapsed <= self._a2f_duration_seconds:
+                previous_time, previous_value = self._a2f_frames[0]
+                for current_time, current_value in self._a2f_frames[1:]:
+                    if elapsed <= current_time:
+                        span = max(current_time - previous_time, 1e-6)
+                        ratio = min(max((elapsed - previous_time) / span, 0.0), 1.0)
+                        return previous_value + (current_value - previous_value) * ratio
+                    previous_time, previous_value = current_time, current_value
+                return self._a2f_frames[-1][1]
+
+            self._a2f_frames = []
+
+        if now < self._speech_until:
+            return 0.3 + max(0.0, np.sin(now * 12.0)) * 0.6
+
+        return 0.0
+
+    def _render_placeholder(self, now: float, mouth_open: float) -> np.ndarray:
+        speaking = mouth_open > 0.02
         image = np.zeros((512, 512, 3), dtype=np.uint8)
 
         if speaking:
@@ -64,16 +122,15 @@ class PlaceholderTrack(VideoStreamTrack):
         image[:, bar_x : bar_x + 120] = (255, 255, 255)
         image[180:330, 156:356] = (20, 20, 20)
 
-        mouth_h = 30
-        if speaking:
-            mouth_h = 60 + int((np.sin(now * 12) + 1) * 50)
+        mouth_h = 24 + int(mouth_open * 110)
         top = 330 - mouth_h // 2
         image[top : top + mouth_h, 176:336] = (255, 0, 0)
         return image
 
-    def _render_avatar(self, now: float, speaking: bool) -> np.ndarray:
+    def _render_avatar(self, now: float, mouth_open: float) -> np.ndarray:
+        speaking = mouth_open > 0.02
         if self.source_frame is None:
-            return self._render_placeholder(now, speaking)
+            return self._render_placeholder(now, mouth_open)
 
         scale = 1.04 + 0.02 * np.sin(now * 0.7)
         if speaking:
@@ -98,11 +155,8 @@ class PlaceholderTrack(VideoStreamTrack):
         overlay = image.copy()
         mouth_center = (256, 360)
         mouth_width = 116
-        mouth_height = 14
-        mouth_alpha = 0.18
-        if speaking:
-            mouth_height = 24 + int((np.sin(now * 12.0) + 1) * 18)
-            mouth_alpha = 0.28
+        mouth_height = 10 + int(mouth_open * 42)
+        mouth_alpha = 0.16 + mouth_open * 0.18
 
         cv2.ellipse(
             overlay,
@@ -126,8 +180,8 @@ class PlaceholderTrack(VideoStreamTrack):
     async def recv(self) -> av.VideoFrame:
         pts, time_base = await self.next_timestamp()
         now = time.monotonic()
-        speaking = now < self._speech_until
-        image = self._render_avatar(now, speaking)
+        mouth_open = self._current_mouth_open(now)
+        image = self._render_avatar(now, mouth_open)
 
         frame = av.VideoFrame.from_ndarray(
             cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
@@ -147,6 +201,9 @@ class LoopingVideoTrack(VideoStreamTrack):
 
     def set_text(self, text: str) -> None:
         self.label = (text or "live").strip()[:120]
+
+    def load_a2f_motion(self, output_dir: str | None) -> bool:
+        return False
 
     def _read_frame(self) -> np.ndarray:
         if not self.capture.isOpened():
