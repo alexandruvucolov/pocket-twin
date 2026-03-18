@@ -135,6 +135,9 @@ class PlaceholderTrack(VideoStreamTrack):
 
         return 0.0
 
+    def _has_active_a2f_motion(self, now: float) -> bool:
+        return bool(self._a2f_frames) and now <= (self._a2f_started_at + self._a2f_duration_seconds)
+
     def _render_placeholder(self, now: float, mouth_open: float) -> np.ndarray:
         speaking = mouth_open > 0.02
         image = np.zeros((512, 512, 3), dtype=np.uint8)
@@ -271,8 +274,10 @@ class PlaceholderTrack(VideoStreamTrack):
         if self.source_frame is None:
             return self._render_placeholder(now, mouth_open)
 
-        scale = 1.04 + 0.02 * np.sin(now * 0.7)
-        if speaking:
+        has_a2f_motion = self._has_active_a2f_motion(now)
+
+        scale = 1.0 if has_a2f_motion else 1.04 + 0.02 * np.sin(now * 0.7)
+        if speaking and not has_a2f_motion:
             scale += 0.015 * np.sin(now * 5.5)
 
         scaled = cv2.resize(
@@ -285,13 +290,17 @@ class PlaceholderTrack(VideoStreamTrack):
         scaled_h, scaled_w = scaled.shape[:2]
         max_x = max(scaled_w - 512, 0)
         max_y = max(scaled_h - 512, 0)
-        offset_x = max_x // 2 + int(np.sin(now * 0.5) * min(max_x, 24) * 0.35)
-        offset_y = max_y // 2 + int(np.cos(now * 0.4) * min(max_y, 24) * 0.2)
+        if has_a2f_motion:
+            offset_x = max_x // 2
+            offset_y = max_y // 2
+        else:
+            offset_x = max_x // 2 + int(np.sin(now * 0.5) * min(max_x, 24) * 0.35)
+            offset_y = max_y // 2 + int(np.cos(now * 0.4) * min(max_y, 24) * 0.2)
         offset_x = max(0, min(offset_x, max_x))
         offset_y = max(0, min(offset_y, max_y))
         image = scaled[offset_y : offset_y + 512, offset_x : offset_x + 512].copy()
 
-        if speaking:
+        if speaking and not has_a2f_motion:
             highlight = image.copy()
             cv2.circle(highlight, (256, 356), 72, (90, 90, 180), -1)
             cv2.addWeighted(highlight, 0.08, image, 0.92, 0, image)
