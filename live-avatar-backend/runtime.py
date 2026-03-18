@@ -47,6 +47,10 @@ class PlaceholderTrack(VideoStreamTrack):
         super().__init__()
         self.label = label
         self.source_frame = source_frame
+        self._mouth_center_x = 256
+        self._mouth_center_y = 360
+        if source_frame is not None:
+            self._mouth_center_x, self._mouth_center_y = self._detect_mouth_center(source_frame)
         self._speech_until = 0.0
         self._a2f_started_at = 0.0
         self._a2f_duration_seconds = 0.0
@@ -135,6 +139,48 @@ class PlaceholderTrack(VideoStreamTrack):
 
         return 0.0
 
+    def _detect_mouth_center(self, image: np.ndarray) -> tuple[int, int]:
+        image_h, image_w = image.shape[:2]
+        search_y1 = int(image_h * 0.52)
+        search_y2 = int(image_h * 0.88)
+        search_x1 = int(image_w * 0.18)
+        search_x2 = int(image_w * 0.82)
+        roi = image[search_y1:search_y2, search_x1:search_x2]
+        if roi.size == 0:
+            return 256, 360
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        edge_strength = cv2.GaussianBlur(np.abs(sobel_y), (0, 0), 1.2)
+
+        roi_float = roi.astype(np.float32)
+        b = roi_float[..., 0]
+        g = roi_float[..., 1]
+        r = roi_float[..., 2]
+        redness = np.clip(r - 0.55 * g - 0.35 * b, 0.0, None)
+        darkness = np.clip(150.0 - gray.astype(np.float32), 0.0, None)
+
+        yy, xx = np.mgrid[0:roi.shape[0], 0:roi.shape[1]]
+        cx = roi.shape[1] / 2.0
+        center_weight = np.exp(-((xx - cx) ** 2) / (2.0 * (roi.shape[1] * 0.22) ** 2))
+        lower_weight = np.clip((yy / max(roi.shape[0] - 1, 1) - 0.18) / 0.82, 0.0, 1.0)
+
+        score = (edge_strength * 0.55 + redness * 0.30 + darkness * 0.15) * center_weight * lower_weight
+        max_score = float(score.max()) if score.size else 0.0
+        if max_score <= 1e-6:
+            return 256, 360
+
+        mask = score >= (max_score * 0.72)
+        if not np.any(mask):
+            peak_index = np.unravel_index(int(np.argmax(score)), score.shape)
+            mouth_y, mouth_x = peak_index
+        else:
+            weights = score[mask]
+            mouth_y = int(np.average(yy[mask], weights=weights))
+            mouth_x = int(np.average(xx[mask], weights=weights))
+
+        return search_x1 + mouth_x, search_y1 + mouth_y
+
     def _has_active_a2f_motion(self, now: float) -> bool:
         return bool(self._a2f_frames) and now <= (self._a2f_started_at + self._a2f_duration_seconds)
 
@@ -162,8 +208,8 @@ class PlaceholderTrack(VideoStreamTrack):
             return image
 
         image_h, image_w = image.shape[:2]
-        center_x = 256
-        center_y = 360
+        center_x = self._mouth_center_x
+        center_y = self._mouth_center_y
         face_half_width = 210
         face_half_height = 180
         mouth_half_width = 118
