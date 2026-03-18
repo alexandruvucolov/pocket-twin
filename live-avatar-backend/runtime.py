@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import random
 import time
 from pathlib import Path
 from urllib.request import urlopen
@@ -96,6 +97,25 @@ def _detect_lip_data(image: np.ndarray) -> dict | None:
         lip_width   = max(float(right_corner[0] - left_corner[0]), 20.0)
         natural_gap = max(lower_y - upper_y, 2.0)
 
+        # Eye positions for blink animation
+        # Left eye: top=159, bottom=145, outer=33, inner=133
+        # Right eye: top=386, bottom=374, outer=263, inner=362
+        def _eye_rect(top_i: int, bot_i: int, outer_i: int, inner_i: int) -> dict | None:
+            if any(i >= n_lm for i in [top_i, bot_i, outer_i, inner_i]):
+                return None
+            tx, ty = px(top_i)
+            bx, by = px(bot_i)
+            ox, oy = px(outer_i)
+            ix, iy = px(inner_i)
+            ecx = (ox + ix) / 2.0
+            ecy = (ty + by) / 2.0
+            return {
+                "cx": ecx, "cy": ecy,
+                "half_h": max((by - ty) / 2.0, 3.0),
+                "half_w": max(abs(ox - ix) / 2.0, 8.0),
+                "top_y": ty,
+            }
+
         return {
             "upper_x": upper_x,
             "upper_y": upper_y,
@@ -106,6 +126,8 @@ def _detect_lip_data(image: np.ndarray) -> dict | None:
             "natural_gap": natural_gap,
             "mouth_center_x": int(center_x),
             "mouth_center_y": int((upper_y + lower_y) / 2.0),
+            "left_eye":  _eye_rect(159, 145,  33, 133),
+            "right_eye": _eye_rect(386, 374, 263, 362),
         }
     except Exception as exc:
         logger.debug("_detect_lip_data failed: %s", exc)
@@ -170,6 +192,9 @@ class PlaceholderTrack(VideoStreamTrack):
         self._a2f_started_at = 0.0
         self._a2f_duration_seconds = 0.0
         self._a2f_frames: list[tuple[float, float]] = []
+        # Blink state --------------------------------------------------------
+        self._next_blink_at: float = 0.0   # 0 = not yet initialised
+        self._blink_start: float = -1.0    # -1 = not currently blinking
 
     def set_text(self, text: str) -> None:
         self.label = (text or "live").strip()[:120]
@@ -302,6 +327,57 @@ class PlaceholderTrack(VideoStreamTrack):
 
         return search_x1 + mouth_x, search_y1 + mouth_y
 
+    def _blink_amount(self, now: float) -> float:
+        """Return 0.0 (open) → 1.0 (closed) following a natural blink schedule."""
+        if self._next_blink_at == 0.0:
+            self._next_blink_at = now + random.uniform(1.5, 3.5)
+        # Start a new blink when due
+        if self._blink_start < 0.0 and now >= self._next_blink_at:
+            self._blink_start = now
+            self._next_blink_at = now + random.uniform(2.5, 6.0)
+        if self._blink_start < 0.0:
+            return 0.0
+        elapsed = now - self._blink_start
+        blink_total = 0.15          # full close+open cycle in seconds
+        if elapsed >= blink_total:
+            self._blink_start = -1.0
+            return 0.0
+        # Triangle wave: ramp up to 1.0 then back down
+        half = blink_total / 2.0
+        return 1.0 - abs(elapsed - half) / half
+
+    def _apply_blink(self, image: np.ndarray, blink: float) -> np.ndarray:
+        """Overlay upper-eyelid skin over the eye region to simulate a blink."""
+        if blink < 0.01 or self._lip_data is None:
+            return image
+        out = image.copy()
+        for eye_key in ("left_eye", "right_eye"):
+            eye = self._lip_data.get(eye_key)
+            if not eye:
+                continue
+            cx   = eye["cx"]
+            cy   = eye["cy"]
+            hh   = eye["half_h"]
+            hw   = eye["half_w"]
+            x1   = max(int(cx - hw * 1.25), 0)
+            x2   = min(int(cx + hw * 1.25), image.shape[1])
+            top  = max(int(cy - hh * 1.1), 1)
+            bot  = min(int(cy + hh * 1.1), image.shape[0])
+            if x1 >= x2 or top >= bot:
+                continue
+            lid_h = bot - top
+            # Sample skin colour from just above the eye (eyelid source)
+            skin_y = max(top - 3, 0)
+            skin_strip = image[skin_y : skin_y + 1, x1:x2]           # 1 row
+            eyelid = np.repeat(skin_strip, lid_h, axis=0)             # stretch
+            alpha = float(np.clip(blink * 1.15, 0.0, 1.0))
+            region = out[top:bot, x1:x2].astype(np.float32)
+            out[top:bot, x1:x2] = np.clip(
+                region * (1.0 - alpha) + eyelid.astype(np.float32) * alpha,
+                0, 255,
+            ).astype(np.uint8)
+        return out
+
     def _has_active_a2f_motion(self, now: float) -> bool:
         return bool(self._a2f_frames) and now <= (self._a2f_started_at + self._a2f_duration_seconds)
 
@@ -386,10 +462,18 @@ class PlaceholderTrack(VideoStreamTrack):
         wy_lower = np.exp(-0.5 * ((grid_y - lower_y) / sigma_y_d) ** 2)
         lower_weight = wx * wy_lower
 
+        # Jaw/chin drop: chin skin below the lips shifts slightly downward
+        sigma_y_jaw  = max(lip_width * 0.55, 14.0)
+        jaw_center_y = lower_y + max(lip_width * 0.45, 12.0)
+        wy_jaw  = np.exp(-0.5 * ((grid_y - jaw_center_y) / sigma_y_jaw) ** 2)
+        jaw_weight = wx * wy_jaw * np.clip((grid_y - lower_y) / (sigma_y_jaw + 1e-6), 0.0, 1.0)
+        jaw_shift  = mouth_open * max(lip_width * 0.07, 3.0)
+
         # Reverse-map: "to draw output pixel (y,x), fetch source from (warp_y, warp_x)"
         #   upper lip moves UP  → sample from further down  → warp_y += upper_shift
         #   lower lip moves DOWN → sample from further up   → warp_y -= lower_shift
-        warp_y = grid_y + upper_weight * upper_shift - lower_weight * lower_shift
+        #   chin shifts down    → sample from further up    → warp_y -= jaw_shift
+        warp_y = grid_y + upper_weight * upper_shift - lower_weight * lower_shift - jaw_weight * jaw_shift
 
         # Horizontal corner spread: as mouth opens, corners pull outward slightly
         sigma_y_corner = max(lip_width * 0.18, 5.0)
@@ -506,12 +590,21 @@ class PlaceholderTrack(VideoStreamTrack):
         scaled_h, scaled_w = scaled.shape[:2]
         max_x = max(scaled_w - 512, 0)
         max_y = max(scaled_h - 512, 0)
+        # Head micro-movement ------------------------------------------------
+        # Idle: slow gentle sway.  Speaking: faster nod in sync with speech.
+        idle_x = int(np.sin(now * 0.5) * min(max_x, 24) * 0.35)
+        idle_y = int(np.cos(now * 0.4) * min(max_y, 24) * 0.2)
+        if speaking:
+            # Subtle vertical nod at ~speech cadence (~4 Hz)
+            nod = int(np.sin(now * 4.2) * 2.5)
+        else:
+            nod = 0
         if has_a2f_motion:
             offset_x = max_x // 2
-            offset_y = max_y // 2
+            offset_y = max_y // 2 + nod
         else:
-            offset_x = max_x // 2 + int(np.sin(now * 0.5) * min(max_x, 24) * 0.35)
-            offset_y = max_y // 2 + int(np.cos(now * 0.4) * min(max_y, 24) * 0.2)
+            offset_x = max_x // 2 + idle_x
+            offset_y = max_y // 2 + idle_y + nod
         offset_x = max(0, min(offset_x, max_x))
         offset_y = max(0, min(offset_y, max_y))
         image = scaled[offset_y : offset_y + 512, offset_x : offset_x + 512].copy()
@@ -521,7 +614,11 @@ class PlaceholderTrack(VideoStreamTrack):
             cv2.circle(highlight, (256, 356), 72, (90, 90, 180), -1)
             cv2.addWeighted(highlight, 0.08, image, 0.92, 0, image)
 
-        return self._apply_mouth_warp(image, mouth_open)
+        image = self._apply_mouth_warp(image, mouth_open)
+        blink = self._blink_amount(now)
+        if blink > 0.01:
+            image = self._apply_blink(image, blink)
+        return image
 
     async def recv(self) -> av.VideoFrame:
         pts, time_base = await self.next_timestamp()
