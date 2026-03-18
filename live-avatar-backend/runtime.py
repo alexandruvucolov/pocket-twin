@@ -217,11 +217,15 @@ class PlaceholderTrack(VideoStreamTrack):
 
         values = [value for _, value in raw_timeline]
         min_value = min(values)
-        max_value = max(values)
-        value_span = max(max_value - min_value, 1e-6)
+        # Use the 95th-percentile as the ceiling so loud frames hit 1.0
+        # while quieter ones still produce visible movement (not compressed to 0).
+        p95 = float(np.percentile(values, 95))
+        value_span = max(p95 - min_value, (max(values) - min_value) * 0.15, 1e-6)
 
         timeline = [
-            (timestamp, float(np.clip((value - min_value) / value_span, 0.0, 1.0)))
+            # Power curve < 1 gives a concave shape: small jaw movements map
+            # to a larger fraction of the visible range, improving sync feel.
+            (timestamp, float(np.clip(((value - min_value) / value_span) ** 0.70, 0.0, 1.0)))
             for timestamp, value in raw_timeline
         ]
 
@@ -250,7 +254,9 @@ class PlaceholderTrack(VideoStreamTrack):
             self._a2f_frames = []
 
         if now < self._speech_until:
-            return 0.3 + max(0.0, np.sin(now * 12.0)) * 0.6
+            # Slightly faster sine + higher base so fallback animation is
+            # more visually in-step with typical speech cadence.
+            return 0.35 + max(0.0, np.sin(now * 15.0)) * 0.65
 
         return 0.0
 
@@ -343,18 +349,18 @@ class PlaceholderTrack(VideoStreamTrack):
         lip_width: float = ld["width"]
         natural_gap: float = ld["natural_gap"]
 
-        # Total vertical opening in pixels (capped at ~3x the natural resting gap)
-        max_delta = natural_gap * 2.8 + 6.0
+        # Total vertical opening in pixels – increased for more visible mouth opening
+        max_delta = natural_gap * 5.0 + 14.0
         gap_delta = mouth_open * max_delta
 
-        # Upper lip travels 40 % of the gap upward, lower lip 60 % downward
-        upper_shift = gap_delta * 0.40   # pixels; lip moves toward smaller y
-        lower_shift = gap_delta * 0.60   # pixels; lip moves toward larger y
+        # Upper lip travels 38 % of the gap upward, lower lip 62 % downward
+        upper_shift = gap_delta * 0.38   # pixels; lip moves toward smaller y
+        lower_shift = gap_delta * 0.62   # pixels; lip moves toward larger y
 
-        # Gaussian influence radii (tuned to feel natural)
-        sigma_x   = lip_width * 0.42     # horizontal extent of the warp
-        sigma_y_u = lip_width * 0.30     # vertical falloff above upper lip
-        sigma_y_d = lip_width * 0.34     # vertical falloff below lower lip
+        # Gaussian influence radii – slightly wider for smoother deformation
+        sigma_x   = lip_width * 0.46     # horizontal extent of the warp
+        sigma_y_u = lip_width * 0.36     # vertical falloff above upper lip
+        sigma_y_d = lip_width * 0.40     # vertical falloff below lower lip
 
         grid_x, grid_y = np.meshgrid(
             np.arange(image_w, dtype=np.float32),
@@ -389,16 +395,16 @@ class PlaceholderTrack(VideoStreamTrack):
             borderMode=cv2.BORDER_REFLECT_101,
         )
 
-        # Subtle dark shadow between the open lips (mouth cavity)
+        # Dark shadow for the open mouth cavity – proportionally larger now
         lip_mid_y = (upper_y + lower_y) / 2.0
-        gap_half  = max(gap_delta * 0.36, 1.0)
+        gap_half  = max(gap_delta * 0.46, 1.0)
         inner_dy  = np.abs(grid_y - lip_mid_y)
         inner_dx  = np.abs(grid_x - center_x) / (lip_width * 0.44 + 1e-6)
         inner_mask = (
             np.clip(1.0 - inner_dx, 0.0, 1.0)
             * np.clip(1.0 - inner_dy / gap_half, 0.0, 1.0)
         )
-        shadow_strength = float(np.clip(0.06 + mouth_open * 0.18, 0.0, 0.28))
+        shadow_strength = float(np.clip(0.05 + mouth_open * 0.26, 0.0, 0.36))
         shadow_alpha = (inner_mask * shadow_strength)[..., None]
         shadow_color = np.full_like(result, (16, 12, 18), dtype=np.uint8)
         result = np.clip(
