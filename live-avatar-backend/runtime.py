@@ -164,8 +164,10 @@ class PlaceholderTrack(VideoStreamTrack):
         image_h, image_w = image.shape[:2]
         center_x = 256
         center_y = 360
-        face_half_width = 150
-        face_half_height = 120
+        face_half_width = 210
+        face_half_height = 180
+        mouth_half_width = 118
+        mouth_half_height = 62
 
         grid_x, grid_y = np.meshgrid(
             np.arange(image_w, dtype=np.float32),
@@ -175,16 +177,24 @@ class PlaceholderTrack(VideoStreamTrack):
         dy = (grid_y - center_y) / float(face_half_height)
         radial = dx * dx + dy * dy
         face_mask = np.clip(1.0 - radial, 0.0, 1.0)
-        lower_face_mask = face_mask * np.clip((grid_y - (center_y - 36)) / 150.0, 0.0, 1.0)
+        lower_face_mask = face_mask * np.clip((grid_y - (center_y - 54)) / 210.0, 0.0, 1.0)
+
+        mouth_dx = (grid_x - center_x) / float(mouth_half_width)
+        mouth_dy = (grid_y - center_y) / float(mouth_half_height)
+        mouth_radial = mouth_dx * mouth_dx + mouth_dy * mouth_dy
+        mouth_mask = np.clip(1.0 - mouth_radial, 0.0, 1.0)
+        inner_mouth_mask = np.clip(1.0 - (mouth_dx * mouth_dx + (mouth_dy * 1.35) * (mouth_dy * 1.35)), 0.0, 1.0)
 
         warp_x = grid_x.copy()
         warp_y = grid_y.copy()
-        jaw_drop = mouth_open * 18.0 * lower_face_mask
-        upper_pull = mouth_open * 7.0 * face_mask * np.clip((center_y - grid_y) / 90.0, 0.0, 1.0)
-        cheek_pull = mouth_open * 5.0 * dx * lower_face_mask
+        jaw_drop = mouth_open * 14.0 * lower_face_mask
+        upper_pull = mouth_open * 5.0 * mouth_mask * np.clip((center_y - grid_y) / 75.0, 0.0, 1.0)
+        cheek_pull = mouth_open * 4.0 * dx * lower_face_mask
+        lip_spread = mouth_open * 6.0 * mouth_dx * mouth_mask
+        lip_open = mouth_open * 16.0 * np.sign(mouth_dy) * np.power(np.abs(mouth_dy), 0.8) * mouth_mask
 
-        warp_y += jaw_drop - upper_pull
-        warp_x += cheek_pull
+        warp_y += jaw_drop - upper_pull + lip_open
+        warp_x += cheek_pull + lip_spread
 
         result = cv2.remap(
             image,
@@ -194,90 +204,17 @@ class PlaceholderTrack(VideoStreamTrack):
             borderMode=cv2.BORDER_REFLECT_101,
         )
 
-        half_width = 110
-        half_height = 56
-
-        x1 = max(center_x - half_width, 0)
-        x2 = min(center_x + half_width, image_w)
-        y1 = max(center_y - half_height, 0)
-        y2 = min(center_y + half_height, image_h)
-        roi = result[y1:y2, x1:x2].copy()
-        if roi.size == 0:
-            return result
-
-        roi_h, roi_w = roi.shape[:2]
-        lip_band = max(8, roi_h // 5)
-        top_lip = roi[:lip_band].copy()
-        bottom_lip = roi[-lip_band:].copy()
-
-        gap = int(8 + mouth_open * 34)
-        inner_top = min(lip_band + gap, roi_h)
-        inner_bottom = max(roi_h - lip_band - gap, 0)
-
-        roi[:] = cv2.GaussianBlur(roi, (0, 0), 1.1)
-
-        top_start = max((inner_top - lip_band) // 2, 0)
-        top_end = min(top_start + lip_band, roi_h)
-        bottom_start = max(inner_bottom + (roi_h - inner_bottom - lip_band) // 2, 0)
-        bottom_end = min(bottom_start + lip_band, roi_h)
-
-        roi[top_start:top_end] = cv2.addWeighted(
-            roi[top_start:top_end],
-            0.18,
-            top_lip[: top_end - top_start],
-            0.82,
+        # Remove the synthetic violet mouth cavity and use only a subtle natural shadow.
+        mouth_shadow = np.clip(0.08 + mouth_open * 0.12, 0.0, 0.22)
+        shadow_mask = (inner_mouth_mask * mouth_shadow)[..., None]
+        shadow_tint = np.full_like(result, (18, 18, 24), dtype=np.uint8)
+        result = np.clip(
+            result.astype(np.float32) * (1.0 - shadow_mask)
+            + shadow_tint.astype(np.float32) * shadow_mask,
             0,
-        )
-        roi[bottom_start:bottom_end] = cv2.addWeighted(
-            roi[bottom_start:bottom_end],
-            0.18,
-            bottom_lip[: bottom_end - bottom_start],
-            0.82,
-            0,
-        )
+            255,
+        ).astype(np.uint8)
 
-        cavity_top = min(top_end, roi_h)
-        cavity_bottom = max(bottom_start, cavity_top)
-        if cavity_bottom > cavity_top:
-            cavity_h = cavity_bottom - cavity_top
-            gradient = np.linspace(0.25, 1.0, cavity_h, dtype=np.float32)[:, None]
-            cavity = np.zeros((cavity_h, roi_w, 3), dtype=np.float32)
-            cavity[..., 0] = 16 + 30 * gradient
-            cavity[..., 1] = 10 + 10 * gradient
-            cavity[..., 2] = 30 + 45 * gradient
-            existing = roi[cavity_top:cavity_bottom].astype(np.float32)
-            alpha = 0.55 + mouth_open * 0.25
-            roi[cavity_top:cavity_bottom] = np.clip(
-                existing * (1.0 - alpha) + cavity * alpha,
-                0,
-                255,
-            ).astype(np.uint8)
-
-            tooth_h = max(2, int(cavity_h * 0.18))
-            tooth_y = cavity_top + max(1, int(cavity_h * 0.08))
-            tooth_margin = max(10, roi_w // 6)
-            roi[tooth_y:tooth_y + tooth_h, tooth_margin:roi_w - tooth_margin] = cv2.addWeighted(
-                roi[tooth_y:tooth_y + tooth_h, tooth_margin:roi_w - tooth_margin],
-                0.25,
-                np.full((tooth_h, roi_w - 2 * tooth_margin, 3), 230, dtype=np.uint8),
-                0.75,
-                0,
-            )
-
-        lip_shadow = result.copy()
-        shadow_alpha = 0.06 + mouth_open * 0.08
-        cv2.ellipse(
-            lip_shadow,
-            (center_x, center_y),
-            (half_width - 8, max(14, int(14 + mouth_open * 10))),
-            0,
-            0,
-            360,
-            (20, 20, 40),
-            2,
-        )
-        cv2.addWeighted(lip_shadow, shadow_alpha, result, 1.0 - shadow_alpha, 0, result)
-        result[y1:y2, x1:x2] = roi
         return result
 
     def _render_avatar(self, now: float, mouth_open: float) -> np.ndarray:
