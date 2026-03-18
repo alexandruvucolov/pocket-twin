@@ -434,16 +434,16 @@ class PlaceholderTrack(VideoStreamTrack):
 
         # Total opening: guaranteed minimum based on lip width so closed-mouth
         # avatars still get visible movement (natural_gap can be ~2px when closed).
-        max_delta = max(natural_gap * 4.0, lip_width * 0.30) + 20.0
+        max_delta = max(natural_gap * 5.0, lip_width * 0.55) + 32.0
         gap_delta = mouth_open * max_delta
 
         upper_shift = gap_delta * 0.42   # upper lip travels upward
         lower_shift = gap_delta * 0.58   # lower lip travels downward
 
         # Influence radii
-        sigma_x   = lip_width * 0.50          # horizontal (covers full lip)
-        sigma_y_u = max(lip_width * 0.28, 8.0)  # vertical spread around upper landmark
-        sigma_y_d = max(lip_width * 0.32, 9.0)  # vertical spread around lower landmark
+        sigma_x   = lip_width * 0.52
+        sigma_y_u = max(lip_width * 0.34, 10.0)
+        sigma_y_d = max(lip_width * 0.38, 12.0)
 
         grid_x, grid_y = np.meshgrid(
             np.arange(image_w, dtype=np.float32),
