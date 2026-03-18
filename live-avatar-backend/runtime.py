@@ -201,8 +201,7 @@ class PlaceholderTrack(VideoStreamTrack):
         x2 = min(center_x + half_width, image_w)
         y1 = max(center_y - half_height, 0)
         y2 = min(center_y + half_height, image_h)
-        original_roi = result[y1:y2, x1:x2].copy()
-        roi = original_roi.copy()
+        roi = result[y1:y2, x1:x2].copy()
         if roi.size == 0:
             return result
 
@@ -278,16 +277,7 @@ class PlaceholderTrack(VideoStreamTrack):
             2,
         )
         cv2.addWeighted(lip_shadow, shadow_alpha, result, 1.0 - shadow_alpha, 0, result)
-
-        mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
-        cv2.ellipse(mask, (roi_w // 2, roi_h // 2), (max(roi_w // 2 - 12, 12), max(roi_h // 2 - 10, 10)), 0, 0, 360, 255, -1)
-        feather = cv2.GaussianBlur(mask, (0, 0), 9).astype(np.float32) / 255.0
-        feather = feather[..., None]
-        blended = (
-            original_roi.astype(np.float32) * (1.0 - feather)
-            + roi.astype(np.float32) * feather
-        )
-        result[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
+        result[y1:y2, x1:x2] = roi
         return result
 
     def _render_avatar(self, now: float, mouth_open: float) -> np.ndarray:
