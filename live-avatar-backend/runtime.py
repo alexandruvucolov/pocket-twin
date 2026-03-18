@@ -339,7 +339,13 @@ class PlaceholderTrack(VideoStreamTrack):
         return self._apply_center_warp(image, mouth_open)
 
     def _apply_landmark_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
-        """MediaPipe-guided lip warp: upper lip moves up, lower lip moves down."""
+        """MediaPipe-guided lip warp: upper lip moves up, lower lip moves down.
+
+        Each lip surface is driven by a Gaussian centred exactly on its landmark
+        row — so the lip pixels themselves deform outward, not just the surrounding
+        skin.  A small horizontal corner-spread is also applied so the mouth widens
+        naturally as it opens.
+        """
         ld = self._lip_data  # type: ignore[assignment]
         image_h, image_w = image.shape[:2]
 
@@ -348,44 +354,50 @@ class PlaceholderTrack(VideoStreamTrack):
         center_x: float = ld["center_x"]
         lip_width: float = ld["width"]
         natural_gap: float = ld["natural_gap"]
+        lip_mid_y = (upper_y + lower_y) / 2.0
 
-        # Total vertical opening in pixels – increased for more visible mouth opening
-        max_delta = natural_gap * 5.0 + 14.0
+        # Total opening: each lip surface shifts by up to ~half this amount.
+        # (smaller than before, but now the lip pixels *themselves* move so the
+        # visual result is much larger)
+        max_delta = natural_gap * 3.5 + 10.0
         gap_delta = mouth_open * max_delta
 
-        # Upper lip travels 38 % of the gap upward, lower lip 62 % downward
-        upper_shift = gap_delta * 0.38   # pixels; lip moves toward smaller y
-        lower_shift = gap_delta * 0.62   # pixels; lip moves toward larger y
+        upper_shift = gap_delta * 0.42   # upper lip travels upward
+        lower_shift = gap_delta * 0.58   # lower lip travels downward
 
-        # Gaussian influence radii – slightly wider for smoother deformation
-        sigma_x   = lip_width * 0.46     # horizontal extent of the warp
-        sigma_y_u = lip_width * 0.36     # vertical falloff above upper lip
-        sigma_y_d = lip_width * 0.40     # vertical falloff below lower lip
+        # Influence radii
+        sigma_x   = lip_width * 0.48          # horizontal (covers full lip)
+        sigma_y_u = max(lip_width * 0.22, 6.0)  # vertical spread around upper landmark
+        sigma_y_d = max(lip_width * 0.25, 7.0)  # vertical spread around lower landmark
 
         grid_x, grid_y = np.meshgrid(
             np.arange(image_w, dtype=np.float32),
             np.arange(image_h, dtype=np.float32),
         )
 
-        # Shared horizontal weight (centred on lip midpoint)
+        # Horizontal weight centred on lip midpoint
         wx = np.exp(-0.5 * ((grid_x - center_x) / sigma_x) ** 2)
 
-        # Upper lip influence: strongest at upper_y, fades away in both y directions,
-        # but only applies to pixels AT or ABOVE upper_y (dy_up >= 0 when y <= upper_y)
-        dy_up = upper_y - grid_y                                        # positive above
-        wy_up = np.exp(-0.5 * (dy_up / (sigma_y_u + 1e-6)) ** 2)
-        upper_weight = wx * wy_up * np.clip(dy_up / (sigma_y_u + 1e-6), 0.0, 1.0)
+        # ── Upper lip Gaussian: centred AT upper_y (no clipping) ──────────────
+        # Pixels exactly at upper_y get weight ≈ 1; falloff both above and below.
+        wy_upper = np.exp(-0.5 * ((grid_y - upper_y) / sigma_y_u) ** 2)
+        upper_weight = wx * wy_upper
 
-        # Lower lip influence: strongest at lower_y, only applies BELOW lower_y
-        dy_dn = grid_y - lower_y                                        # positive below
-        wy_dn = np.exp(-0.5 * (dy_dn / (sigma_y_d + 1e-6)) ** 2)
-        lower_weight = wx * wy_dn * np.clip(dy_dn / (sigma_y_d + 1e-6), 0.0, 1.0)
+        # ── Lower lip Gaussian: centred AT lower_y ────────────────────────────
+        wy_lower = np.exp(-0.5 * ((grid_y - lower_y) / sigma_y_d) ** 2)
+        lower_weight = wx * wy_lower
 
-        # Build remap: output(y,x) ← source(warp_y, warp_x)
-        # Lip moved up → to fill the gap, sample from source pixels that were
-        # lower (higher y) → add upper_shift.  Vice versa for lower lip.
+        # Reverse-map: "to draw output pixel (y,x), fetch source from (warp_y, warp_x)"
+        #   upper lip moves UP  → sample from further down  → warp_y += upper_shift
+        #   lower lip moves DOWN → sample from further up   → warp_y -= lower_shift
         warp_y = grid_y + upper_weight * upper_shift - lower_weight * lower_shift
-        warp_x = grid_x  # no horizontal displacement for now
+
+        # Horizontal corner spread: as mouth opens, corners pull outward slightly
+        sigma_y_corner = max(lip_width * 0.18, 5.0)
+        corner_band = np.exp(-0.5 * ((grid_y - lip_mid_y) / sigma_y_corner) ** 2)
+        # normalised ±1 at each corner, 0 at centre
+        corner_nx = (grid_x - center_x) / (lip_width * 0.5 + 1e-6)
+        warp_x = grid_x - wx * corner_band * corner_nx * mouth_open * 3.5
 
         result = cv2.remap(
             image,
@@ -395,16 +407,15 @@ class PlaceholderTrack(VideoStreamTrack):
             borderMode=cv2.BORDER_REFLECT_101,
         )
 
-        # Dark shadow for the open mouth cavity – proportionally larger now
-        lip_mid_y = (upper_y + lower_y) / 2.0
-        gap_half  = max(gap_delta * 0.46, 1.0)
+        # Dark mouth-cavity shadow between the open lips
+        gap_half  = max(gap_delta * 0.44, 1.0)
         inner_dy  = np.abs(grid_y - lip_mid_y)
-        inner_dx  = np.abs(grid_x - center_x) / (lip_width * 0.44 + 1e-6)
+        inner_dx  = np.abs(grid_x - center_x) / (lip_width * 0.42 + 1e-6)
         inner_mask = (
             np.clip(1.0 - inner_dx, 0.0, 1.0)
             * np.clip(1.0 - inner_dy / gap_half, 0.0, 1.0)
         )
-        shadow_strength = float(np.clip(0.05 + mouth_open * 0.26, 0.0, 0.36))
+        shadow_strength = float(np.clip(0.04 + mouth_open * 0.28, 0.0, 0.38))
         shadow_alpha = (inner_mask * shadow_strength)[..., None]
         shadow_color = np.full_like(result, (16, 12, 18), dtype=np.uint8)
         result = np.clip(
@@ -415,6 +426,7 @@ class PlaceholderTrack(VideoStreamTrack):
         ).astype(np.uint8)
 
         return result
+
 
     def _apply_center_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
         """Legacy heuristic warp used when MediaPipe did not detect a face."""
