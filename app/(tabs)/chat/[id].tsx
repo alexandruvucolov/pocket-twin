@@ -33,19 +33,6 @@ import { Colors } from "../../../src/constants/colors";
 import { useAvatars } from "../../../src/context/AvatarContext";
 import * as FileSystem from "expo-file-system/legacy";
 import {
-  createAgentFromPhoto,
-  createAgentStream,
-  createAgentVideoStream,
-  createTalk,
-  createTalkFromAudio,
-  deleteAgentStream,
-  pollTalk,
-  startAgentConnection,
-  submitAgentIceCandidate,
-  uploadAudioToDID,
-  uploadImageToDID,
-} from "../../../src/lib/did";
-import {
   createLiveAvatarSession,
   deleteLiveAvatarSession,
   isLiveAvatarBackendConfigured,
@@ -65,29 +52,15 @@ const VOICE_TRANSCRIPT_BUBBLE_HEIGHT = 84;
 // Approx height of 2 message bubbles, so they float visually over the avatar.
 const CHAT_OVERLAP = 96;
 
-type ActiveLiveSession =
-  | {
-      provider: "did";
-      agentId: string;
-      streamId: string;
-      sessionId: string;
-    }
-  | {
-      provider: "backend";
-      sessionId: string;
-    };
+type ActiveLiveSession = {
+  provider: "backend";
+  sessionId: string;
+};
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const {
-    avatars,
-    coins,
-    messages,
-    sendMessage,
-    spendCoin,
-    updateAvatarVideoUrl,
-  } = useAvatars();
+  const { avatars, coins, messages, sendMessage, spendCoin } = useAvatars();
   const insets = useSafeAreaInsets();
 
   const avatar = avatars.find((a: { id: string }) => a.id === id);
@@ -102,7 +75,6 @@ export default function ChatScreen() {
   const [isLiveMode, setIsLiveMode] = useState(false);
   const [isLiveConnecting, setIsLiveConnecting] = useState(false);
   const [liveStatusText, setLiveStatusText] = useState("Offline");
-  const [didPlaybackUnavailable, setDidPlaybackUnavailable] = useState(false);
 
   const videoPlayer = useVideoPlayer(null, (player) => {
     player.loop = true;
@@ -116,7 +88,6 @@ export default function ChatScreen() {
   const [replyStatusText, setReplyStatusText] = useState<string | null>(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [composerHeight, setComposerHeight] = useState(72);
-  const [isAnimating, setIsAnimating] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -150,16 +121,9 @@ export default function ChatScreen() {
   const voiceSheetAnim = useRef(new Animated.Value(VOICE_SHEET_HEIGHT)).current;
   const inputBarAnim = useRef(new Animated.Value(0)).current; // 0 = visible, 1 = hidden
   const coinsRef = useRef(coins);
-  const didSourceUrlRef = useRef<string | null>(null);
-  const isAvatarReplyPlaybackRef = useRef(false);
-  const didPlaybackUnavailableRef = useRef(false);
-  const didCreditsAlertShownRef = useRef(false);
   const livePeerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const liveSessionRef = useRef<ActiveLiveSession | null>(null);
   const liveConnectAttemptRef = useRef(0);
-  const liveAgentIdRef = useRef<string | null>(
-    (process.env.EXPO_PUBLIC_DID_AGENT_ID ?? "").trim() || null,
-  );
   const pendingIceCandidatesRef = useRef<
     Array<{
       candidate: string | null;
@@ -184,18 +148,6 @@ export default function ChatScreen() {
   const avatarPreviewMessages =
     isKeyboardOpen && chatMessages.length > 0 ? chatMessages.slice(-2) : [];
   const visibleChatMessages = chatMessages;
-
-  useEffect(() => {
-    didPlaybackUnavailableRef.current = didPlaybackUnavailable;
-  }, [didPlaybackUnavailable]);
-
-  const isDidCreditsError = useCallback((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    return (
-      message.includes("InsufficientCreditsError") ||
-      message.includes("not enough credits")
-    );
-  }, []);
 
   const disposeVoiceRecorder = useCallback(async () => {
     const recorder = audioRecorderRef.current;
@@ -222,7 +174,6 @@ export default function ChatScreen() {
   }, []);
 
   useEffect(() => {
-    if (isAvatarReplyPlaybackRef.current) return;
     const nextVideoUrl = avatar?.videoUrl ?? null;
     setDisplayedVideoUrl(nextVideoUrl);
     if (!nextVideoUrl) return;
@@ -236,46 +187,6 @@ export default function ChatScreen() {
     ttsPlayer.pause();
     setIsSpeaking(false);
   }, [ttsPlayer]);
-
-  const playAvatarReplyVideo = useCallback(
-    (videoUrl: string) => {
-      return new Promise<void>((resolve) => {
-        isAvatarReplyPlaybackRef.current = true;
-        setDisplayedVideoUrl(videoUrl);
-        videoPlayer.loop = false;
-        videoPlayer.muted = false;
-        videoPlayer.replace(videoUrl);
-        videoPlayer.play();
-
-        const sub = videoPlayer.addListener("playToEnd", () => {
-          sub.remove();
-          videoPlayer.muted = true;
-          videoPlayer.loop = true;
-          videoPlayer.currentTime = 0;
-          videoPlayer.play();
-          isAvatarReplyPlaybackRef.current = false;
-          resolve();
-        });
-      });
-    },
-    [videoPlayer],
-  );
-
-  const getDidSourceUrl = useCallback(async () => {
-    if (didSourceUrlRef.current) return didSourceUrlRef.current;
-    if (!avatar?.imageUri) throw new Error("Avatar image is missing.");
-
-    let uploadUri = avatar.imageUri;
-    if (/^https?:\/\//i.test(uploadUri)) {
-      const tempUri = `${FileSystem.cacheDirectory ?? ""}${avatar.id}-did-source.jpg`;
-      await FileSystem.downloadAsync(uploadUri, tempUri);
-      uploadUri = tempUri;
-    }
-
-    const didUrl = await uploadImageToDID(uploadUri);
-    didSourceUrlRef.current = didUrl;
-    return didUrl;
-  }, [avatar?.id, avatar?.imageUri]);
 
   const getLiveAvatarSourceInput = useCallback(async () => {
     if (!avatar?.imageUri) {
@@ -311,10 +222,10 @@ export default function ChatScreen() {
     livePeerConnectionRef.current = null;
 
     if (peerConnection) {
-      peerConnection.onicecandidate = null;
-      peerConnection.ontrack = null;
-      peerConnection.onconnectionstatechange = null;
-      peerConnection.oniceconnectionstatechange = null;
+      (peerConnection as any).onicecandidate = null;
+      (peerConnection as any).ontrack = null;
+      (peerConnection as any).onconnectionstatechange = null;
+      (peerConnection as any).oniceconnectionstatechange = null;
       peerConnection.close();
     }
 
@@ -326,15 +237,11 @@ export default function ChatScreen() {
     if (!currentSession) return;
 
     try {
-      if (currentSession.provider === "backend") {
-        await deleteLiveAvatarSession({
-          sessionId: currentSession.sessionId,
-        });
-      } else {
-        await deleteAgentStream(currentSession);
-      }
+      await deleteLiveAvatarSession({
+        sessionId: currentSession.sessionId,
+      });
     } catch (err) {
-      console.warn("[D-ID] delete live stream error:", err);
+      console.warn("[Live Avatar] delete live stream error:", err);
     }
   }, []);
 
@@ -347,40 +254,13 @@ export default function ChatScreen() {
         sdpMLineIndex: number | null;
       },
     ) => {
-      if (session.provider === "backend") {
-        await submitLiveAvatarIceCandidate({
-          sessionId: session.sessionId,
-          ...payload,
-        });
-        return;
-      }
-
-      await submitAgentIceCandidate({
-        agentId: session.agentId,
-        streamId: session.streamId,
+      await submitLiveAvatarIceCandidate({
         sessionId: session.sessionId,
         ...payload,
       });
     },
     [],
   );
-
-  const disableDidPlayback = useCallback(async () => {
-    setDidPlaybackUnavailable(true);
-    setReplyStatusText(null);
-
-    if (liveSessionRef.current?.provider === "did") {
-      await disconnectLiveStream();
-    }
-
-    if (!didCreditsAlertShownRef.current) {
-      didCreditsAlertShownRef.current = true;
-      Alert.alert(
-        "D-ID credits exhausted",
-        "Avatar video is unavailable right now. Replies will continue with audio only.",
-      );
-    }
-  }, [disconnectLiveStream]);
 
   const playLiveBackendAudio = useCallback(
     (text: string) => {
@@ -414,31 +294,23 @@ export default function ChatScreen() {
         throw new Error("Live stream is not connected.");
       }
 
-      if (session.provider === "backend") {
-        await Promise.all([
-          speakLiveAvatarText({
-            sessionId: session.sessionId,
-            text,
-          }),
-          Promise.resolve(playLiveBackendAudio(text)),
-        ]);
-        return;
-      }
-
-      await createAgentVideoStream({
-        ...session,
-        text,
-      });
+      await Promise.all([
+        speakLiveAvatarText({
+          sessionId: session.sessionId,
+          text,
+        }),
+        Promise.resolve(playLiveBackendAudio(text)),
+      ]);
     },
     [playLiveBackendAudio],
   );
 
   const startLiveStream = useCallback(async () => {
     if (!avatar || isLiveConnecting) return;
-    if (!liveBackendConfigured && didPlaybackUnavailableRef.current) {
+    if (!liveBackendConfigured) {
       Alert.alert(
-        "D-ID unavailable",
-        "Live avatar is unavailable right now because the D-ID account has no remaining credits.",
+        "Live avatar unavailable",
+        "Set EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL to your server and make sure the live avatar backend is online.",
       );
       return;
     }
@@ -451,7 +323,8 @@ export default function ChatScreen() {
       const attemptId = liveConnectAttemptRef.current + 1;
       liveConnectAttemptRef.current = attemptId;
 
-      const isCurrentAttempt = () => liveConnectAttemptRef.current === attemptId;
+      const isCurrentAttempt = () =>
+        liveConnectAttemptRef.current === attemptId;
 
       let liveOffer: { type: string; sdp: string };
       let iceServers:
@@ -462,45 +335,27 @@ export default function ChatScreen() {
           }>
         | undefined;
 
-      if (liveBackendConfigured) {
-        setLiveStatusText("Preparing live avatar…");
-        const sourceInput = await getLiveAvatarSourceInput();
-        setLiveStatusText("Opening live stream…");
-        const streamSession = await createLiveAvatarSession({
-          avatarId: avatar.id,
-          avatarName: avatar.name,
-          ...sourceInput,
-        });
-        liveSessionRef.current = {
-          provider: "backend",
-          sessionId: streamSession.sessionId,
-        };
-        liveOffer = streamSession.offer;
-        iceServers = streamSession.iceServers;
-      } else {
-        const didImageUrl = await getDidSourceUrl();
-
-        let agentId = liveAgentIdRef.current;
-        if (!agentId) {
-          setLiveStatusText("Creating D-ID agent…");
-          agentId = await createAgentFromPhoto({
-            name: avatar.name,
-            sourceUrl: didImageUrl,
-          });
-          liveAgentIdRef.current = agentId;
-        }
-
-        setLiveStatusText("Opening live stream…");
-        const streamSession = await createAgentStream(agentId);
-        liveSessionRef.current = {
-          provider: "did",
-          agentId: streamSession.agentId,
-          streamId: streamSession.streamId,
-          sessionId: streamSession.sessionId,
-        };
-        liveOffer = streamSession.offer;
-        iceServers = streamSession.iceServers;
-      }
+      setLiveStatusText("Preparing live avatar…");
+      const sourceInput = await getLiveAvatarSourceInput();
+      setLiveStatusText("Opening live stream…");
+      const streamSession = await createLiveAvatarSession({
+        avatarId: avatar.id,
+        avatarName: avatar.name,
+        ...sourceInput,
+        livePortraitMode: "lips-only",
+        livePortraitOptions: {
+          module: "R_lip",
+          preserveHeadPose: true,
+          preserveEyeGaze: true,
+          normalizeLips: true,
+        },
+      });
+      liveSessionRef.current = {
+        provider: "backend",
+        sessionId: streamSession.sessionId,
+      };
+      liveOffer = streamSession.offer;
+      iceServers = streamSession.iceServers;
 
       if (!isCurrentAttempt()) {
         return;
@@ -516,7 +371,7 @@ export default function ChatScreen() {
       });
       livePeerConnectionRef.current = peerConnection;
 
-      peerConnection.ontrack = (event) => {
+      (peerConnection as any).ontrack = (event: any) => {
         if (!isCurrentAttempt()) {
           return;
         }
@@ -542,7 +397,7 @@ export default function ChatScreen() {
         event.track.onunmute = attachRemoteTrack;
       };
 
-      peerConnection.onconnectionstatechange = () => {
+      (peerConnection as any).onconnectionstatechange = () => {
         if (!isCurrentAttempt()) {
           return;
         }
@@ -569,7 +424,7 @@ export default function ChatScreen() {
         }
       };
 
-      peerConnection.onicecandidate = (event) => {
+      (peerConnection as any).onicecandidate = (event: any) => {
         if (!isCurrentAttempt()) {
           return;
         }
@@ -592,7 +447,7 @@ export default function ChatScreen() {
         });
       };
 
-      peerConnection.oniceconnectionstatechange = () => {
+      (peerConnection as any).oniceconnectionstatechange = () => {
         if (!isCurrentAttempt()) {
           return;
         }
@@ -640,25 +495,13 @@ export default function ChatScreen() {
         throw new Error("WebRTC answer was incomplete.");
       }
 
-      if (activeSession.provider === "backend") {
-        await submitLiveAvatarAnswer({
-          sessionId: activeSession.sessionId,
-          answer: {
-            type: answer.type,
-            sdp: answer.sdp,
-          },
-        });
-      } else {
-        await startAgentConnection({
-          agentId: activeSession.agentId,
-          streamId: activeSession.streamId,
-          sessionId: activeSession.sessionId,
-          answer: {
-            type: answer.type,
-            sdp: answer.sdp,
-          },
-        });
-      }
+      await submitLiveAvatarAnswer({
+        sessionId: activeSession.sessionId,
+        answer: {
+          type: answer.type,
+          sdp: answer.sdp,
+        },
+      });
 
       const queuedIceCandidates = [...pendingIceCandidatesRef.current];
       pendingIceCandidatesRef.current = [];
@@ -677,9 +520,7 @@ export default function ChatScreen() {
       const msg = err instanceof Error ? err.message : String(err);
       Alert.alert(
         "Live stream failed",
-        liveBackendConfigured
-          ? `${msg}\n\nSet EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL to your signaling backend and make sure the Runpod live service is online.`
-          : `${msg}\n\nIf agent creation still fails, set EXPO_PUBLIC_DID_AGENT_ID in .env to an existing D-ID agent id and try again.`,
+        `${msg}\n\nSet EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL to your signaling backend and make sure the Runpod live service is online.`,
       );
     } finally {
       setIsLiveConnecting(false);
@@ -687,7 +528,6 @@ export default function ChatScreen() {
   }, [
     avatar,
     disconnectLiveStream,
-    getDidSourceUrl,
     getLiveAvatarSourceInput,
     isLiveConnecting,
     liveBackendConfigured,
@@ -708,37 +548,6 @@ export default function ChatScreen() {
       void disconnectLiveStream();
     };
   }, [disconnectLiveStream]);
-
-  const animateAvatarReplyAndWait = useCallback(
-    async (text: string) => {
-      if (!avatar) throw new Error("Avatar not found.");
-
-      setIsSpeaking(true);
-      try {
-        setReplyStatusText("Generating voice…");
-        const [didImageUrl, audioUri] = await Promise.all([
-          getDidSourceUrl(),
-          textToSpeech(text),
-        ]);
-        setReplyStatusText("Uploading voice…");
-        const didAudioUrl = await uploadAudioToDID(audioUri);
-        setReplyStatusText("Rendering avatar…");
-        const talkId = await createTalkFromAudio(
-          didImageUrl,
-          didAudioUrl,
-          `${avatar.name}-${Date.now()}`,
-        );
-        const videoUrl = await pollTalk(talkId);
-        setReplyStatusText("Playing reply…");
-        updateAvatarVideoUrl(avatar.id, videoUrl);
-        await playAvatarReplyVideo(videoUrl);
-      } finally {
-        setIsSpeaking(false);
-        setReplyStatusText(null);
-      }
-    },
-    [avatar, getDidSourceUrl, playAvatarReplyVideo, updateAvatarVideoUrl],
-  );
 
   const isVoiceSessionActive = useCallback((sessionId: number) => {
     return isVoiceModeRef.current && voiceSessionIdRef.current === sessionId;
@@ -948,36 +757,6 @@ export default function ChatScreen() {
     }, [chatMessages.length, composerHeight, scrollToLatest]),
   );
 
-  const handleReAnimate = async () => {
-    if (!avatar || isAnimating) return;
-    if (didPlaybackUnavailableRef.current) {
-      Alert.alert(
-        "D-ID unavailable",
-        "D-ID video is unavailable right now because the account has no remaining credits.",
-      );
-      return;
-    }
-    setIsAnimating(true);
-    try {
-      // Download the Firebase-hosted avatar image to a local temp file so
-      // D-ID's Rekognition service can analyse it via their own /images endpoint.
-      const tempUri =
-        (FileSystem.cacheDirectory ?? "") + avatar.id + "_reanimate.jpg";
-      await FileSystem.downloadAsync(avatar.imageUri, tempUri);
-      const didImageUrl = await uploadImageToDID(tempUri);
-      const talkId = await createTalk(didImageUrl);
-      const videoUrl = await pollTalk(talkId);
-      updateAvatarVideoUrl(avatar.id, videoUrl);
-      videoPlayer.replace(videoUrl);
-      videoPlayer.play();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      Alert.alert("Animation failed", msg);
-    } finally {
-      setIsAnimating(false);
-    }
-  };
-
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || isSending || !!replyStatusText) return;
@@ -994,16 +773,11 @@ export default function ChatScreen() {
       try {
         if (liveSessionRef.current) {
           await speakLiveReply(reply);
-        } else if (didPlaybackUnavailableRef.current) {
-          void speakReply(reply);
         } else {
-          await animateAvatarReplyAndWait(reply);
+          void speakReply(reply);
         }
       } catch (avatarErr) {
         console.warn("[Avatar] reply playback error:", avatarErr);
-        if (isDidCreditsError(avatarErr)) {
-          await disableDidPlayback();
-        }
         void speakReply(reply);
       }
     } catch (err) {
@@ -1075,8 +849,8 @@ export default function ChatScreen() {
 
       // Metering events: if they fire, keep lastAudioTimeRef fresh while user speaks
       const sub = recorder.addListener(
-        "recorderStatusUpdate",
-        (status: { metering?: number }) => {
+        "recordingStatusUpdate",
+        (status: any) => {
           meterEventsSeenRef.current = true;
           const db = status.metering ?? -160;
           if (db > SILENCE_THRESHOLD_DB) {
@@ -1241,16 +1015,11 @@ export default function ChatScreen() {
       try {
         if (liveSessionRef.current) {
           await speakLiveReply(reply);
-        } else if (didPlaybackUnavailableRef.current) {
-          await speakReplyAndWait(reply);
         } else {
-          await animateAvatarReplyAndWait(reply);
+          await speakReplyAndWait(reply);
         }
       } catch (avatarErr) {
         console.warn("[Avatar] animate voice reply error:", avatarErr);
-        if (isDidCreditsError(avatarErr)) {
-          await disableDidPlayback();
-        }
         await speakReplyAndWait(reply);
       }
       if (!isVoiceSessionActive(sessionId) || turnId !== voiceTurnIdRef.current)
@@ -1428,36 +1197,13 @@ export default function ChatScreen() {
             </View>
           </TouchableOpacity>
           <View style={{ flex: 1 }} />
-          {!avatar.videoUrl && (
-            <TouchableOpacity
-              style={[
-                styles.animateBtn,
-                isAnimating && styles.animateBtnBusy,
-                didPlaybackUnavailable && styles.featureBtnDisabled,
-              ]}
-              onPress={handleReAnimate}
-              disabled={isAnimating || didPlaybackUnavailable}
-              activeOpacity={0.8}
-            >
-              {isAnimating ? (
-                <ActivityIndicator size="small" color={Colors.white} />
-              ) : (
-                <Text style={styles.animateBtnText}>✨ Animate</Text>
-              )}
-            </TouchableOpacity>
-          )}
           <TouchableOpacity
             style={[
               styles.liveBtn,
               (isLiveMode || isLiveConnecting) && styles.liveBtnActive,
-              !liveBackendConfigured &&
-                didPlaybackUnavailable &&
-                styles.featureBtnDisabled,
+              !liveBackendConfigured && styles.featureBtnDisabled,
             ]}
             onPress={toggleLiveStream}
-            disabled={
-              isAnimating || (!liveBackendConfigured && didPlaybackUnavailable)
-            }
             activeOpacity={0.8}
           >
             {isLiveConnecting ? (

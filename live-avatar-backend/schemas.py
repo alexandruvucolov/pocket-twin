@@ -11,6 +11,10 @@ class CreateSessionBody(BaseModel):
     sourceImageUrl: str | None = None
     sourceImageBase64: str | None = None
     sourceImageMimeType: str | None = None
+    livePortraitMode: str | None = None
+    livePortraitDrivingVideoUrl: str | None = None
+    livePortraitMotionTemplateUrl: str | None = None
+    livePortraitOptions: dict[str, Any] | None = None
 
 
 class AnswerBody(BaseModel):

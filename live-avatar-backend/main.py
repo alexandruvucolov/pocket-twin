@@ -6,6 +6,8 @@ import logging
 import os
 import ssl
 import tempfile
+import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -20,6 +22,7 @@ from aiortc import (
 from aiortc.sdp import candidate_from_sdp
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from audio2face import Audio2FaceClient
 from dotenv import load_dotenv
 from runtime import LoopingVideoTrack, PlaceholderTrack, SESSIONS, close_session, get_session, load_source_frame
@@ -29,6 +32,11 @@ from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 load_dotenv()
 logger = logging.getLogger(__name__)
 A2F_CLIENT = Audio2FaceClient()
+PUBLIC_RESULTS_DIR = Path(
+    os.getenv("LIVE_AVATAR_PUBLIC_RESULTS_DIR", "/workspace/liveportrait-results").strip()
+    or "/workspace/liveportrait-results"
+)
+PUBLIC_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 PENDING_ICE_CANDIDATES: dict[
     str,
     list[dict[str, str | int | None]],
@@ -93,32 +101,108 @@ def _extract_video_url(value: Any) -> str | None:
     return None
 
 
-def _get_runpod_config() -> tuple[str, str, str | None] | None:
+def _get_runpod_config() -> tuple[str, str] | None:
     api_key = os.getenv("LIVE_AVATAR_RUNPOD_API_KEY", "").strip()
     endpoint_id = os.getenv("LIVE_AVATAR_RUNPOD_LIVEPORTRAIT_ENDPOINT_ID", "").strip()
     base_url = os.getenv("LIVE_AVATAR_RUNPOD_BASE_URL", "https://api.runpod.ai/v2").strip()
-    driving_video_url = os.getenv("LIVE_AVATAR_DRIVING_VIDEO_URL", "").strip() or None
     if not api_key or not endpoint_id:
         return None
-    return api_key, f"{base_url.rstrip('/')}/{endpoint_id}", driving_video_url
+    return api_key, f"{base_url.rstrip('/')}/{endpoint_id}"
 
 
-def _submit_runpod_job(source_image_url: str, driving_video_url: str | None) -> str:
+def _pick_bool_env(name: str) -> bool | None:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean value")
+
+
+def _load_liveportrait_default_input() -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+
+    raw_json = os.getenv("LIVE_AVATAR_LIVEPORTRAIT_DEFAULT_INPUT_JSON", "").strip()
+    if raw_json:
+        parsed = json.loads(raw_json)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("LIVE_AVATAR_LIVEPORTRAIT_DEFAULT_INPUT_JSON must be a JSON object")
+        payload.update(parsed)
+
+    driving_video_url = os.getenv("LIVE_AVATAR_DRIVING_VIDEO_URL", "").strip()
+    motion_template_url = os.getenv("LIVE_AVATAR_LIVEPORTRAIT_MOTION_TEMPLATE_URL", "").strip()
+    mode = os.getenv("LIVE_AVATAR_LIVEPORTRAIT_MODE", "").strip().lower()
+
+    if driving_video_url and "driving_video_url" not in payload:
+        payload["driving_video_url"] = driving_video_url
+    if motion_template_url and "motion_template_url" not in payload:
+        payload["motion_template_url"] = motion_template_url
+    if mode:
+        payload.setdefault("live_portrait_mode", mode)
+
+    if mode == "lips-only":
+        payload.setdefault("animation_region", "lips")
+        payload.setdefault("retarget_part", "lips")
+        payload.setdefault("retarget_module", "R_lip")
+        payload.setdefault("preserve_head_pose", True)
+        payload.setdefault("preserve_eye_gaze", True)
+        payload.setdefault("normalize_lips", True)
+
+    for env_name, key in (
+        ("LIVE_AVATAR_LIVEPORTRAIT_PRESERVE_HEAD_POSE", "preserve_head_pose"),
+        ("LIVE_AVATAR_LIVEPORTRAIT_PRESERVE_EYE_GAZE", "preserve_eye_gaze"),
+        ("LIVE_AVATAR_LIVEPORTRAIT_NORMALIZE_LIPS", "normalize_lips"),
+    ):
+        value = _pick_bool_env(env_name)
+        if value is not None:
+            payload[key] = value
+
+    return payload
+
+
+def _build_liveportrait_input(
+    source_image_url: str,
+    *,
+    driving_video_url: str | None = None,
+    motion_template_url: str | None = None,
+    mode: str | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "source_image_url": source_image_url,
+        "output_format": "mp4",
+        **_load_liveportrait_default_input(),
+    }
+
+    if driving_video_url:
+        payload["driving_video_url"] = driving_video_url
+    if motion_template_url:
+        payload["motion_template_url"] = motion_template_url
+    if mode:
+        payload["live_portrait_mode"] = mode
+        if mode == "lips-only":
+            payload.setdefault("animation_region", "lips")
+            payload.setdefault("retarget_part", "lips")
+            payload.setdefault("retarget_module", "R_lip")
+            payload.setdefault("preserve_head_pose", True)
+            payload.setdefault("preserve_eye_gaze", True)
+            payload.setdefault("normalize_lips", True)
+    if options:
+        payload.update(options)
+
+    return payload
+
+
+def _submit_runpod_job(liveportrait_input: dict[str, Any]) -> str:
     config = _get_runpod_config()
     if not config:
         raise RuntimeError("Runpod LivePortrait is not configured")
 
-    api_key, endpoint_url, default_driving_video_url = config
+    api_key, endpoint_url = config
     payload = {
-        "input": {
-            "source_image_url": source_image_url,
-            "output_format": "mp4",
-            **(
-                {"driving_video_url": driving_video_url or default_driving_video_url}
-                if (driving_video_url or default_driving_video_url)
-                else {}
-            ),
-        }
+        "input": liveportrait_input,
     }
     request = Request(
         f"{endpoint_url}/run",
@@ -144,7 +228,7 @@ def _wait_for_runpod_video(job_id: str) -> str:
     if not config:
         raise RuntimeError("Runpod LivePortrait is not configured")
 
-    api_key, endpoint_url, _ = config
+    api_key, endpoint_url = config
     for _attempt in range(90):
         request = Request(
             f"{endpoint_url}/status/{job_id}",
@@ -179,12 +263,22 @@ def _download_video_to_tempfile(video_url: str) -> str:
         return temp_file.name
 
 
-def _prepare_liveportrait_video(source_image_url: str) -> str:
-    config = _get_runpod_config()
-    if not config:
-        raise RuntimeError("Runpod LivePortrait is not configured")
-    _api_key, _endpoint_url, driving_video_url = config
-    job_id = _submit_runpod_job(source_image_url, driving_video_url)
+def _prepare_liveportrait_video(
+    source_image_url: str,
+    *,
+    driving_video_url: str | None = None,
+    motion_template_url: str | None = None,
+    mode: str | None = None,
+    options: dict[str, Any] | None = None,
+) -> str:
+    liveportrait_input = _build_liveportrait_input(
+        source_image_url,
+        driving_video_url=driving_video_url,
+        motion_template_url=motion_template_url,
+        mode=mode,
+        options=options,
+    )
+    job_id = _submit_runpod_job(liveportrait_input)
     video_url = _wait_for_runpod_video(job_id)
     return _download_video_to_tempfile(video_url)
 
@@ -322,6 +416,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/results", StaticFiles(directory=str(PUBLIC_RESULTS_DIR)), name="results")
 
 
 @app.get("/health")
@@ -350,6 +445,10 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
             liveportrait_video_path = await asyncio.to_thread(
                 _prepare_liveportrait_video,
                 body.sourceImageUrl,
+                driving_video_url=body.livePortraitDrivingVideoUrl,
+                motion_template_url=body.livePortraitMotionTemplateUrl,
+                mode=body.livePortraitMode,
+                options=body.livePortraitOptions,
             )
             track = LoopingVideoTrack(liveportrait_video_path)
         except Exception:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -12,6 +13,104 @@ import cv2
 import numpy as np
 from aiortc import RTCPeerConnection, VideoStreamTrack
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# MediaPipe Face Mesh – imported lazily so the backend still starts when
+# mediapipe is not installed (degrades to the old heuristic warp).
+# ---------------------------------------------------------------------------
+def _try_import_face_mesh():
+    try:
+        import mediapipe as mp  # noqa: PLC0415
+        return mp.solutions.face_mesh.FaceMesh
+    except Exception:
+        return None
+
+_FaceMeshCls = _try_import_face_mesh()
+
+
+# ---------------------------------------------------------------------------
+# Lip landmark detection (MediaPipe Face Mesh)
+# ---------------------------------------------------------------------------
+def _detect_lip_data(image: np.ndarray) -> dict | None:
+    """Detect lip geometry from a 512×512 BGR source image.
+
+    Returns a dict with:
+        upper_y / upper_x   – centroid of inner-upper-lip landmarks
+        lower_y / lower_x   – centroid of inner-lower-lip landmarks
+        center_x            – horizontal mid-point between lip corners
+        width               – pixel distance between left and right corners
+        natural_gap         – resting vertical distance between upper/lower
+        mouth_center_x/y    – single centre point (for legacy fallback)
+
+    Returns None if MediaPipe is unavailable or no face was detected.
+    """
+    if _FaceMeshCls is None:
+        return None
+
+    try:
+        face_mesh = _FaceMeshCls(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.3,
+        )
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        result = face_mesh.process(rgb)
+        face_mesh.close()
+
+        if not result.multi_face_landmarks:
+            return None
+
+        h, w = image.shape[:2]
+        lm = result.multi_face_landmarks[0].landmark
+
+        def px(idx: int) -> tuple[float, float]:
+            return lm[idx].x * w, lm[idx].y * h
+
+        # MediaPipe Face Mesh inner-lip landmark indices
+        #   upper inner: 78 191 80 81 82 13 312 311 310 415 308
+        #   lower inner: 78  95 88 178 87 14 317 402 318 324 308
+        upper_inner_idx = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
+        lower_inner_idx = [78,  95, 88, 178, 87, 14, 317, 402, 318, 324, 308]
+        left_corner_idx  = 61
+        right_corner_idx = 291
+
+        n_lm = len(lm)
+        upper_pts = [px(i) for i in upper_inner_idx if i < n_lm]
+        lower_pts = [px(i) for i in lower_inner_idx if i < n_lm]
+
+        if not upper_pts or not lower_pts:
+            return None
+
+        upper_x = float(np.mean([p[0] for p in upper_pts]))
+        upper_y = float(np.mean([p[1] for p in upper_pts]))
+        lower_x = float(np.mean([p[0] for p in lower_pts]))
+        lower_y = float(np.mean([p[1] for p in lower_pts]))
+
+        left_corner  = px(left_corner_idx)  if left_corner_idx  < n_lm else (0.0, (upper_y + lower_y) / 2)
+        right_corner = px(right_corner_idx) if right_corner_idx < n_lm else (float(w), (upper_y + lower_y) / 2)
+
+        center_x    = (left_corner[0] + right_corner[0]) / 2.0
+        lip_width   = max(float(right_corner[0] - left_corner[0]), 20.0)
+        natural_gap = max(lower_y - upper_y, 2.0)
+
+        return {
+            "upper_x": upper_x,
+            "upper_y": upper_y,
+            "lower_x": lower_x,
+            "lower_y": lower_y,
+            "center_x": center_x,
+            "width": lip_width,
+            "natural_gap": natural_gap,
+            "mouth_center_x": int(center_x),
+            "mouth_center_y": int((upper_y + lower_y) / 2.0),
+        }
+    except Exception as exc:
+        logger.debug("_detect_lip_data failed: %s", exc)
+        return None
+
 
 
 def load_source_frame(
@@ -47,10 +146,26 @@ class PlaceholderTrack(VideoStreamTrack):
         super().__init__()
         self.label = label
         self.source_frame = source_frame
-        self._mouth_center_x = 256
+        # Lip geometry detected from source image ----------------------------
+        self._lip_data: dict | None = None          # MediaPipe path (preferred)
+        self._mouth_center_x = 256                  # fallback centre (legacy)
         self._mouth_center_y = 360
         if source_frame is not None:
-            self._mouth_center_x, self._mouth_center_y = self._detect_mouth_center(source_frame)
+            self._lip_data = _detect_lip_data(source_frame)
+            if self._lip_data is not None:
+                self._mouth_center_x = self._lip_data["mouth_center_x"]
+                self._mouth_center_y = self._lip_data["mouth_center_y"]
+                logger.info(
+                    "Lip landmarks detected: center=(%.0f, %.0f) width=%.0f natural_gap=%.1fpx",
+                    self._lip_data["center_x"],
+                    (self._lip_data["upper_y"] + self._lip_data["lower_y"]) / 2,
+                    self._lip_data["width"],
+                    self._lip_data["natural_gap"],
+                )
+            else:
+                logger.warning("MediaPipe could not detect a face – using edge-based mouth-centre fallback.")
+                self._mouth_center_x, self._mouth_center_y = self._detect_mouth_center(source_frame)
+        # Motion state -------------------------------------------------------
         self._speech_until = 0.0
         self._a2f_started_at = 0.0
         self._a2f_duration_seconds = 0.0
@@ -204,9 +319,99 @@ class PlaceholderTrack(VideoStreamTrack):
         return image
 
     def _apply_mouth_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
+        """Warp the mouth region to simulate lip movement.
+
+        If MediaPipe detected lip landmarks at session-creation time, uses the
+        precise upper/lower lip positions for a clean, natural-looking warp.
+        Otherwise falls back to the original heuristic center-based warp.
+        """
         if mouth_open <= 0.01:
             return image
 
+        if self._lip_data is not None:
+            return self._apply_landmark_warp(image, mouth_open)
+        return self._apply_center_warp(image, mouth_open)
+
+    def _apply_landmark_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
+        """MediaPipe-guided lip warp: upper lip moves up, lower lip moves down."""
+        ld = self._lip_data  # type: ignore[assignment]
+        image_h, image_w = image.shape[:2]
+
+        upper_y: float = ld["upper_y"]
+        lower_y: float = ld["lower_y"]
+        center_x: float = ld["center_x"]
+        lip_width: float = ld["width"]
+        natural_gap: float = ld["natural_gap"]
+
+        # Total vertical opening in pixels (capped at ~3x the natural resting gap)
+        max_delta = natural_gap * 2.8 + 6.0
+        gap_delta = mouth_open * max_delta
+
+        # Upper lip travels 40 % of the gap upward, lower lip 60 % downward
+        upper_shift = gap_delta * 0.40   # pixels; lip moves toward smaller y
+        lower_shift = gap_delta * 0.60   # pixels; lip moves toward larger y
+
+        # Gaussian influence radii (tuned to feel natural)
+        sigma_x   = lip_width * 0.42     # horizontal extent of the warp
+        sigma_y_u = lip_width * 0.30     # vertical falloff above upper lip
+        sigma_y_d = lip_width * 0.34     # vertical falloff below lower lip
+
+        grid_x, grid_y = np.meshgrid(
+            np.arange(image_w, dtype=np.float32),
+            np.arange(image_h, dtype=np.float32),
+        )
+
+        # Shared horizontal weight (centred on lip midpoint)
+        wx = np.exp(-0.5 * ((grid_x - center_x) / sigma_x) ** 2)
+
+        # Upper lip influence: strongest at upper_y, fades away in both y directions,
+        # but only applies to pixels AT or ABOVE upper_y (dy_up >= 0 when y <= upper_y)
+        dy_up = upper_y - grid_y                                        # positive above
+        wy_up = np.exp(-0.5 * (dy_up / (sigma_y_u + 1e-6)) ** 2)
+        upper_weight = wx * wy_up * np.clip(dy_up / (sigma_y_u + 1e-6), 0.0, 1.0)
+
+        # Lower lip influence: strongest at lower_y, only applies BELOW lower_y
+        dy_dn = grid_y - lower_y                                        # positive below
+        wy_dn = np.exp(-0.5 * (dy_dn / (sigma_y_d + 1e-6)) ** 2)
+        lower_weight = wx * wy_dn * np.clip(dy_dn / (sigma_y_d + 1e-6), 0.0, 1.0)
+
+        # Build remap: output(y,x) ← source(warp_y, warp_x)
+        # Lip moved up → to fill the gap, sample from source pixels that were
+        # lower (higher y) → add upper_shift.  Vice versa for lower lip.
+        warp_y = grid_y + upper_weight * upper_shift - lower_weight * lower_shift
+        warp_x = grid_x  # no horizontal displacement for now
+
+        result = cv2.remap(
+            image,
+            warp_x,
+            warp_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+
+        # Subtle dark shadow between the open lips (mouth cavity)
+        lip_mid_y = (upper_y + lower_y) / 2.0
+        gap_half  = max(gap_delta * 0.36, 1.0)
+        inner_dy  = np.abs(grid_y - lip_mid_y)
+        inner_dx  = np.abs(grid_x - center_x) / (lip_width * 0.44 + 1e-6)
+        inner_mask = (
+            np.clip(1.0 - inner_dx, 0.0, 1.0)
+            * np.clip(1.0 - inner_dy / gap_half, 0.0, 1.0)
+        )
+        shadow_strength = float(np.clip(0.06 + mouth_open * 0.18, 0.0, 0.28))
+        shadow_alpha = (inner_mask * shadow_strength)[..., None]
+        shadow_color = np.full_like(result, (16, 12, 18), dtype=np.uint8)
+        result = np.clip(
+            result.astype(np.float32) * (1.0 - shadow_alpha)
+            + shadow_color.astype(np.float32) * shadow_alpha,
+            0,
+            255,
+        ).astype(np.uint8)
+
+        return result
+
+    def _apply_center_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
+        """Legacy heuristic warp used when MediaPipe did not detect a face."""
         image_h, image_w = image.shape[:2]
         center_x = self._mouth_center_x
         center_y = self._mouth_center_y

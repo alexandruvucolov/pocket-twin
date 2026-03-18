@@ -6,3 +6,4 @@ pydantic==2.10.6
 numpy==2.2.4
 opencv-python-headless==4.11.0.86
 av==13.1.0
+mediapipe==0.10.21

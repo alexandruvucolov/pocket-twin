@@ -17,6 +17,13 @@ export interface LiveAvatarRtcSession {
   iceServers: LiveAvatarIceServer[];
 }
 
+export interface LiveAvatarSessionOptions {
+  livePortraitMode?: "full" | "lips-only";
+  livePortraitDrivingVideoUrl?: string;
+  livePortraitMotionTemplateUrl?: string;
+  livePortraitOptions?: Record<string, unknown>;
+}
+
 function getBackendBaseUrl() {
   return (
     process.env.EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL ??
@@ -64,13 +71,15 @@ export function isLiveAvatarBackendConfigured(): boolean {
   return Boolean(getBackendBaseUrl());
 }
 
-export async function createLiveAvatarSession(params: {
-  avatarId: string;
-  avatarName: string;
-  sourceImageUrl?: string;
-  sourceImageBase64?: string;
-  sourceImageMimeType?: string;
-}): Promise<LiveAvatarRtcSession> {
+export async function createLiveAvatarSession(
+  params: {
+    avatarId: string;
+    avatarName: string;
+    sourceImageUrl?: string;
+    sourceImageBase64?: string;
+    sourceImageMimeType?: string;
+  } & LiveAvatarSessionOptions,
+): Promise<LiveAvatarRtcSession> {
   const baseUrl = getRequiredBaseUrl();
   const res = await fetch(`${baseUrl}/api/live-avatar/sessions`, {
     method: "POST",
