@@ -19,7 +19,9 @@ Planned flow:
 - REST contract for session lifecycle
 - in-memory session tracking
 - diagnostics for whether SDK paths are configured
-- placeholder session states so integration can continue without blocking
+- WAV artifact preparation for each `speak` call
+- optional ElevenLabs TTS for real 16k WAV output
+- tone fallback when TTS is not configured
 
 ## Endpoints
 
@@ -63,11 +65,18 @@ LIVE_AVATAR_A2F_AVATAR_ID=default-avatar
 ## What is still missing for real NVIDIA execution
 
 You still need to implement:
-- server-side TTS audio generation
-- audio resampling to the format expected by Audio2Face samples
 - SDK model loading using `NVIDIA_A2F_SDK_ROOT` and `NVIDIA_A2F_MODEL_PATH`
 - streaming executor invocation
 - turning blendshape / geometry output into rendered avatar frames or another consumable artifact
+
+## Current practical progress
+
+This upstream now prepares a `.wav` artifact for each `speak` call. The next NVIDIA-only step is:
+
+1. load the SDK bundle
+2. feed the prepared WAV/PCM into the Audio2Face executor
+3. capture blendshape or geometry results
+4. connect those results back to the live avatar renderer
 
 ## Practical note
 

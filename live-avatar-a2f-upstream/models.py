@@ -32,4 +32,6 @@ class UpstreamSession(BaseModel):
     status: str = Field(default="ready")
     utteranceCount: int = 0
     lastText: str | None = None
+    lastAudioPath: str | None = None
+    lastAudioSampleRate: int | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
