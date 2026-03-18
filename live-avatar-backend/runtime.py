@@ -161,27 +161,57 @@ class PlaceholderTrack(VideoStreamTrack):
         if mouth_open <= 0.01:
             return image
 
-        result = image.copy()
+        image_h, image_w = image.shape[:2]
         center_x = 256
         center_y = 360
-        half_width = 84
-        half_height = 30
+        face_half_width = 150
+        face_half_height = 120
+
+        grid_x, grid_y = np.meshgrid(
+            np.arange(image_w, dtype=np.float32),
+            np.arange(image_h, dtype=np.float32),
+        )
+        dx = (grid_x - center_x) / float(face_half_width)
+        dy = (grid_y - center_y) / float(face_half_height)
+        radial = dx * dx + dy * dy
+        face_mask = np.clip(1.0 - radial, 0.0, 1.0)
+        lower_face_mask = face_mask * np.clip((grid_y - (center_y - 36)) / 150.0, 0.0, 1.0)
+
+        warp_x = grid_x.copy()
+        warp_y = grid_y.copy()
+        jaw_drop = mouth_open * 18.0 * lower_face_mask
+        upper_pull = mouth_open * 7.0 * face_mask * np.clip((center_y - grid_y) / 90.0, 0.0, 1.0)
+        cheek_pull = mouth_open * 5.0 * dx * lower_face_mask
+
+        warp_y += jaw_drop - upper_pull
+        warp_x += cheek_pull
+
+        result = cv2.remap(
+            image,
+            warp_x,
+            warp_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+
+        half_width = 110
+        half_height = 56
 
         x1 = max(center_x - half_width, 0)
-        x2 = min(center_x + half_width, image.shape[1])
+        x2 = min(center_x + half_width, image_w)
         y1 = max(center_y - half_height, 0)
-        y2 = min(center_y + half_height, image.shape[0])
-        original_roi = image[y1:y2, x1:x2].copy()
+        y2 = min(center_y + half_height, image_h)
+        original_roi = result[y1:y2, x1:x2].copy()
         roi = original_roi.copy()
         if roi.size == 0:
             return result
 
         roi_h, roi_w = roi.shape[:2]
-        lip_band = max(6, roi_h // 5)
+        lip_band = max(8, roi_h // 5)
         top_lip = roi[:lip_band].copy()
         bottom_lip = roi[-lip_band:].copy()
 
-        gap = int(6 + mouth_open * 26)
+        gap = int(8 + mouth_open * 34)
         inner_top = min(lip_band + gap, roi_h)
         inner_bottom = max(roi_h - lip_band - gap, 0)
 
@@ -236,11 +266,11 @@ class PlaceholderTrack(VideoStreamTrack):
             )
 
         lip_shadow = result.copy()
-        shadow_alpha = 0.08 + mouth_open * 0.1
+        shadow_alpha = 0.06 + mouth_open * 0.08
         cv2.ellipse(
             lip_shadow,
             (center_x, center_y),
-            (half_width - 6, max(10, int(10 + mouth_open * 8))),
+            (half_width - 8, max(14, int(14 + mouth_open * 10))),
             0,
             0,
             360,
@@ -250,16 +280,7 @@ class PlaceholderTrack(VideoStreamTrack):
         cv2.addWeighted(lip_shadow, shadow_alpha, result, 1.0 - shadow_alpha, 0, result)
 
         mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
-        cv2.ellipse(
-            mask,
-            (roi_w // 2, roi_h // 2),
-            (max(roi_w // 2 - 10, 8), max(roi_h // 2 - 8, 6)),
-            0,
-            0,
-            360,
-            255,
-            -1,
-        )
+        cv2.ellipse(mask, (roi_w // 2, roi_h // 2), (max(roi_w // 2 - 12, 12), max(roi_h // 2 - 10, 10)), 0, 0, 360, 255, -1)
         feather = cv2.GaussianBlur(mask, (0, 0), 9).astype(np.float32) / 255.0
         feather = feather[..., None]
         blended = (
