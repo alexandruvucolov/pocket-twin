@@ -6,11 +6,15 @@ ENV_FILE="$SCRIPT_DIR/.env"
 
 SDK_ROOT="${NVIDIA_A2F_SDK_ROOT:-/root/Audio2Face-3D-SDK}"
 MODEL_PATH="${NVIDIA_A2F_MODEL_PATH:-/root/Audio2Face-3D-SDK/_data/audio2face-models/audio2face-3d-v3.0/model.json}"
+CUDA_PATH_VALUE="${CUDA_PATH:-/usr/local/cuda-12.8}"
+TENSORRT_ROOT_VALUE="${TENSORRT_ROOT_DIR:-/opt/tensorrt}"
 RUN_COMMAND='./bridge/run_bridge.sh --audio {audio_path} --model {model_path} --output {output_dir} --session {session_id} --utterance {utterance}'
 
 cat > "$ENV_FILE" <<EOF
 NVIDIA_A2F_SDK_ROOT=$SDK_ROOT
 NVIDIA_A2F_MODEL_PATH=$MODEL_PATH
+CUDA_PATH=$CUDA_PATH_VALUE
+TENSORRT_ROOT_DIR=$TENSORRT_ROOT_VALUE
 NVIDIA_A2F_ARTIFACTS_DIR=./artifacts
 NVIDIA_A2F_OUTPUTS_DIR=./outputs
 NVIDIA_A2F_SAMPLE_RATE=16000
