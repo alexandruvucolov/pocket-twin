@@ -156,6 +156,7 @@ export default function ChatScreen() {
   const didCreditsAlertShownRef = useRef(false);
   const livePeerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const liveSessionRef = useRef<ActiveLiveSession | null>(null);
+  const liveConnectAttemptRef = useRef(0);
   const liveAgentIdRef = useRef<string | null>(
     (process.env.EXPO_PUBLIC_DID_AGENT_ID ?? "").trim() || null,
   );
@@ -301,6 +302,7 @@ export default function ChatScreen() {
   }, [avatar?.imageUri]);
 
   const disconnectLiveStream = useCallback(async () => {
+    liveConnectAttemptRef.current += 1;
     const currentSession = liveSessionRef.current;
     liveSessionRef.current = null;
     pendingIceCandidatesRef.current = [];
@@ -446,6 +448,10 @@ export default function ChatScreen() {
 
     try {
       await disconnectLiveStream();
+      const attemptId = liveConnectAttemptRef.current + 1;
+      liveConnectAttemptRef.current = attemptId;
+
+      const isCurrentAttempt = () => liveConnectAttemptRef.current === attemptId;
 
       let liveOffer: { type: string; sdp: string };
       let iceServers:
@@ -496,6 +502,10 @@ export default function ChatScreen() {
         iceServers = streamSession.iceServers;
       }
 
+      if (!isCurrentAttempt()) {
+        return;
+      }
+
       const activeSession = liveSessionRef.current;
       if (!activeSession) {
         throw new Error("Live session was not created.");
@@ -507,6 +517,9 @@ export default function ChatScreen() {
       livePeerConnectionRef.current = peerConnection;
 
       peerConnection.ontrack = (event) => {
+        if (!isCurrentAttempt()) {
+          return;
+        }
         if (event.track?.kind !== "video") {
           return;
         }
@@ -530,6 +543,9 @@ export default function ChatScreen() {
       };
 
       peerConnection.onconnectionstatechange = () => {
+        if (!isCurrentAttempt()) {
+          return;
+        }
         const nextState = peerConnection.connectionState;
         if (nextState === "connected") {
           setIsLiveMode(true);
@@ -554,6 +570,9 @@ export default function ChatScreen() {
       };
 
       peerConnection.onicecandidate = (event) => {
+        if (!isCurrentAttempt()) {
+          return;
+        }
         const session = liveSessionRef.current;
         if (!session) return;
 
@@ -574,6 +593,9 @@ export default function ChatScreen() {
       };
 
       peerConnection.oniceconnectionstatechange = () => {
+        if (!isCurrentAttempt()) {
+          return;
+        }
         const nextState = peerConnection.iceConnectionState;
         if (nextState === "checking") {
           setLiveStatusText("Connecting…");
@@ -596,7 +618,22 @@ export default function ChatScreen() {
         new RTCSessionDescription(liveOffer),
       );
 
+      if (!isCurrentAttempt()) {
+        return;
+      }
+
+      if (peerConnection.signalingState !== "have-remote-offer") {
+        throw new Error(
+          `PeerConnection signaling state became ${peerConnection.signalingState} before createAnswer().`,
+        );
+      }
+
       const answer = await peerConnection.createAnswer();
+
+      if (!isCurrentAttempt()) {
+        return;
+      }
+
       await peerConnection.setLocalDescription(answer);
 
       if (!answer.sdp || !answer.type) {
