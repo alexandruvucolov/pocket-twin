@@ -356,19 +356,18 @@ class PlaceholderTrack(VideoStreamTrack):
         natural_gap: float = ld["natural_gap"]
         lip_mid_y = (upper_y + lower_y) / 2.0
 
-        # Total opening: each lip surface shifts by up to ~half this amount.
-        # (smaller than before, but now the lip pixels *themselves* move so the
-        # visual result is much larger)
-        max_delta = natural_gap * 3.5 + 10.0
+        # Total opening: guaranteed minimum based on lip width so closed-mouth
+        # avatars still get visible movement (natural_gap can be ~2px when closed).
+        max_delta = max(natural_gap * 4.0, lip_width * 0.30) + 20.0
         gap_delta = mouth_open * max_delta
 
         upper_shift = gap_delta * 0.42   # upper lip travels upward
         lower_shift = gap_delta * 0.58   # lower lip travels downward
 
         # Influence radii
-        sigma_x   = lip_width * 0.48          # horizontal (covers full lip)
-        sigma_y_u = max(lip_width * 0.22, 6.0)  # vertical spread around upper landmark
-        sigma_y_d = max(lip_width * 0.25, 7.0)  # vertical spread around lower landmark
+        sigma_x   = lip_width * 0.50          # horizontal (covers full lip)
+        sigma_y_u = max(lip_width * 0.28, 8.0)  # vertical spread around upper landmark
+        sigma_y_d = max(lip_width * 0.32, 9.0)  # vertical spread around lower landmark
 
         grid_x, grid_y = np.meshgrid(
             np.arange(image_w, dtype=np.float32),
