@@ -69,15 +69,42 @@ class PlaceholderTrack(VideoStreamTrack):
         if not isinstance(frames, list) or not frames:
             return False
 
-        timeline: list[tuple[float, float]] = []
+        raw_timeline: list[tuple[float, float]] = []
         for frame in frames:
             if not isinstance(frame, dict):
                 continue
             time_ms = frame.get("timeMs")
-            mouth_open = frame.get("mouthOpen")
-            if not isinstance(time_ms, (int, float)) or not isinstance(mouth_open, (int, float)):
+            if not isinstance(time_ms, (int, float)):
                 continue
-            timeline.append((max(float(time_ms), 0.0) / 1000.0, float(np.clip(mouth_open, 0.0, 1.0))))
+
+            jaw_transform = frame.get("jawTransform")
+            jaw_values = (
+                [float(value) for value in jaw_transform]
+                if isinstance(jaw_transform, list)
+                else []
+            )
+            if len(jaw_values) >= 15:
+                raw_open = abs(jaw_values[14]) + abs(jaw_values[13]) * 0.35
+            else:
+                mouth_open = frame.get("mouthOpen")
+                if not isinstance(mouth_open, (int, float)):
+                    continue
+                raw_open = float(mouth_open)
+
+            raw_timeline.append((max(float(time_ms), 0.0) / 1000.0, raw_open))
+
+        if not raw_timeline:
+            return False
+
+        values = [value for _, value in raw_timeline]
+        min_value = min(values)
+        max_value = max(values)
+        value_span = max(max_value - min_value, 1e-6)
+
+        timeline = [
+            (timestamp, float(np.clip((value - min_value) / value_span, 0.0, 1.0)))
+            for timestamp, value in raw_timeline
+        ]
 
         if not timeline:
             return False
