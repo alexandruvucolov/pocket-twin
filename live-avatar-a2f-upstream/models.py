@@ -34,4 +34,9 @@ class UpstreamSession(BaseModel):
     lastText: str | None = None
     lastAudioPath: str | None = None
     lastAudioSampleRate: int | None = None
+    lastOutputDir: str | None = None
+    lastManifestPath: str | None = None
+    lastRunCommand: str | None = None
+    lastExecutionOk: bool | None = None
+    lastExecutionError: str | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)

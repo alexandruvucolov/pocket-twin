@@ -27,8 +27,11 @@ async def health() -> dict[str, object]:
     return {
         "ok": True,
         "sdkConfigured": service.is_sdk_configured,
+        "executionEnabled": service.config.enable_execution,
+        "canExecute": service.can_execute,
         "ttsConfigured": service.has_tts,
         "artifactsDir": str(service.artifacts_dir),
+        "outputsDir": str(service.outputs_dir),
     }
 
 

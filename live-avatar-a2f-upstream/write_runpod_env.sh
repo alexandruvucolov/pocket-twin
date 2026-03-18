@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+
+SDK_ROOT="${NVIDIA_A2F_SDK_ROOT:-/root/Audio2Face-3D-SDK}"
+MODEL_PATH="${NVIDIA_A2F_MODEL_PATH:-/root/Audio2Face-3D-SDK/_data/audio2face-models/audio2face-3d-v3.0/model.json}"
+RUN_COMMAND='./bridge/run_bridge.sh --audio {audio_path} --model {model_path} --output {output_dir} --session {session_id} --utterance {utterance}'
+
+cat > "$ENV_FILE" <<EOF
+NVIDIA_A2F_SDK_ROOT=$SDK_ROOT
+NVIDIA_A2F_MODEL_PATH=$MODEL_PATH
+NVIDIA_A2F_ARTIFACTS_DIR=./artifacts
+NVIDIA_A2F_OUTPUTS_DIR=./outputs
+NVIDIA_A2F_SAMPLE_RATE=16000
+NVIDIA_A2F_USE_GPU_SOLVER=true
+NVIDIA_A2F_ENABLE_EXECUTION=true
+NVIDIA_A2F_RUN_COMMAND=$RUN_COMMAND
+NVIDIA_A2F_RUN_TIMEOUT_SECONDS=180
+NVIDIA_A2F_ELEVENLABS_API_KEY=${NVIDIA_A2F_ELEVENLABS_API_KEY:-}
+NVIDIA_A2F_ELEVENLABS_VOICE_ID=${NVIDIA_A2F_ELEVENLABS_VOICE_ID:-}
+EOF
+
+echo "Wrote $ENV_FILE"
