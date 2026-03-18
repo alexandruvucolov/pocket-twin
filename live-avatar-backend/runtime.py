@@ -453,14 +453,21 @@ class PlaceholderTrack(VideoStreamTrack):
         # Horizontal weight centred on lip midpoint
         wx = np.exp(-0.5 * ((grid_x - center_x) / sigma_x) ** 2)
 
-        # ── Upper lip Gaussian: centred AT upper_y (no clipping) ──────────────
-        # Pixels exactly at upper_y get weight ≈ 1; falloff both above and below.
-        wy_upper = np.exp(-0.5 * ((grid_y - upper_y) / sigma_y_u) ** 2)
-        upper_weight = wx * wy_upper
+        # Half-space masks: sigmoid split at lip_mid_y so the two Gaussians
+        # never overlap. Pixels above mid only feel the upper lip pull; pixels
+        # below mid only feel the lower lip pull. This is what creates a real
+        # opening instead of the whole mouth shifting as one block.
+        split_sharpness = max(natural_gap * 0.6, 2.5)
+        upper_half = 1.0 / (1.0 + np.exp( (grid_y - lip_mid_y) / split_sharpness))  # ~1 above mid, ~0 below
+        lower_half = 1.0 - upper_half                                                 # ~0 above mid, ~1 below
 
-        # ── Lower lip Gaussian: centred AT lower_y ────────────────────────────
+        # ── Upper lip Gaussian: centred AT upper_y, confined to upper half ────
+        wy_upper = np.exp(-0.5 * ((grid_y - upper_y) / sigma_y_u) ** 2)
+        upper_weight = wx * wy_upper * upper_half
+
+        # ── Lower lip Gaussian: centred AT lower_y, confined to lower half ────
         wy_lower = np.exp(-0.5 * ((grid_y - lower_y) / sigma_y_d) ** 2)
-        lower_weight = wx * wy_lower
+        lower_weight = wx * wy_lower * lower_half
 
         # Jaw/chin drop: chin skin below the lips shifts slightly downward
         sigma_y_jaw  = max(lip_width * 0.55, 14.0)
