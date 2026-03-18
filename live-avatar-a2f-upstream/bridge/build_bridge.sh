@@ -9,6 +9,18 @@ if [[ -z "$SDK_ROOT" ]]; then
   exit 1
 fi
 
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "Missing dependency: cmake"
+  echo "Install it with: apt-get update && apt-get install -y cmake build-essential"
+  exit 1
+fi
+
+if ! command -v c++ >/dev/null 2>&1; then
+  echo "Missing dependency: C++ compiler"
+  echo "Install it with: apt-get update && apt-get install -y build-essential"
+  exit 1
+fi
+
 "$SCRIPT_DIR/install_into_sdk.sh" "$SDK_ROOT"
 
 BUILD_DIR="$SDK_ROOT/_build/release"

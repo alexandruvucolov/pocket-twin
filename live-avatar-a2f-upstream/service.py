@@ -8,39 +8,47 @@ import shlex
 import struct
 import subprocess
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from dotenv import load_dotenv
 
 from models import UpstreamSession
 
 logger = logging.getLogger(__name__)
 
+load_dotenv(Path(__file__).with_name(".env"))
+
+
+def _env_str(name: str, default: str) -> str:
+    return os.getenv(name, default).strip() or default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip() or str(default)
+    return int(raw)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
 
 @dataclass(slots=True)
 class NvidiaConfig:
-    sdk_root: str = os.getenv("NVIDIA_A2F_SDK_ROOT", "").strip()
-    model_path: str = os.getenv("NVIDIA_A2F_MODEL_PATH", "").strip()
-    artifacts_dir: str = os.getenv("NVIDIA_A2F_ARTIFACTS_DIR", "./artifacts").strip() or "./artifacts"
-    outputs_dir: str = os.getenv("NVIDIA_A2F_OUTPUTS_DIR", "./outputs").strip() or "./outputs"
-    sample_rate: int = int(os.getenv("NVIDIA_A2F_SAMPLE_RATE", "16000").strip() or "16000")
-    use_gpu_solver: bool = os.getenv("NVIDIA_A2F_USE_GPU_SOLVER", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    enable_execution: bool = os.getenv("NVIDIA_A2F_ENABLE_EXECUTION", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    run_command: str = os.getenv("NVIDIA_A2F_RUN_COMMAND", "").strip()
-    run_timeout_seconds: int = int(os.getenv("NVIDIA_A2F_RUN_TIMEOUT_SECONDS", "180").strip() or "180")
-    elevenlabs_api_key: str = os.getenv("NVIDIA_A2F_ELEVENLABS_API_KEY", "").strip()
-    elevenlabs_voice_id: str = os.getenv("NVIDIA_A2F_ELEVENLABS_VOICE_ID", "").strip()
+    sdk_root: str = field(default_factory=lambda: _env_str("NVIDIA_A2F_SDK_ROOT", ""))
+    model_path: str = field(default_factory=lambda: _env_str("NVIDIA_A2F_MODEL_PATH", ""))
+    artifacts_dir: str = field(default_factory=lambda: _env_str("NVIDIA_A2F_ARTIFACTS_DIR", "./artifacts"))
+    outputs_dir: str = field(default_factory=lambda: _env_str("NVIDIA_A2F_OUTPUTS_DIR", "./outputs"))
+    sample_rate: int = field(default_factory=lambda: _env_int("NVIDIA_A2F_SAMPLE_RATE", 16000))
+    use_gpu_solver: bool = field(default_factory=lambda: _env_bool("NVIDIA_A2F_USE_GPU_SOLVER", True))
+    enable_execution: bool = field(default_factory=lambda: _env_bool("NVIDIA_A2F_ENABLE_EXECUTION", False))
+    run_command: str = field(default_factory=lambda: _env_str("NVIDIA_A2F_RUN_COMMAND", ""))
+    run_timeout_seconds: int = field(default_factory=lambda: _env_int("NVIDIA_A2F_RUN_TIMEOUT_SECONDS", 180))
+    elevenlabs_api_key: str = field(default_factory=lambda: _env_str("NVIDIA_A2F_ELEVENLABS_API_KEY", ""))
+    elevenlabs_voice_id: str = field(default_factory=lambda: _env_str("NVIDIA_A2F_ELEVENLABS_VOICE_ID", ""))
 
 
 class NvidiaAudio2FaceService:
