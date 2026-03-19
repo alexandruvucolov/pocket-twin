@@ -10,6 +10,9 @@ mediapipe==0.10.21
 httpx>=0.27.0
 # MuseTalk deps — installed in venv so they shadow the incompatible system versions
 # (system diffusers/transformers pin huggingface-hub<1.0 but system has 1.7.1)
+# Torch pinned to CUDA build matching system torchvision 0.19.1+cu124
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.4.1+cu124
 huggingface-hub>=1.0.0
 transformers>=4.48.0
 diffusers>=0.30.0
