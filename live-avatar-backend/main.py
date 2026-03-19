@@ -671,7 +671,6 @@ async def _musetalk_speak(
             logger.info("MuseTalk: applied %d synthesized frames", len(frames))
         else:
             track._musetalk_busy = False  # release lock on failure
-        else:
             reason = ""
             try:
                 reason = str(musetalk_infer.get_last_synthesize_reason() or "")
