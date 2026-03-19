@@ -116,16 +116,33 @@ def _detect_lip_data(image: np.ndarray) -> dict | None:
                 "top_y": ty,
             }
 
+        def mean_px(*indices: int) -> tuple[float, float]:
+            pts_ = [px(i) for i in indices if i < n_lm]
+            if not pts_:
+                return center_x, (upper_y + lower_y) / 2.0
+            return float(np.mean([p[0] for p in pts_])), float(np.mean([p[1] for p in pts_]))
+
+        nose_tip   = px(4)   if 4   < n_lm else (center_x, upper_y - lip_width * 0.8)
+        chin       = px(152) if 152 < n_lm else (center_x, lower_y + lip_width * 0.8)
+        left_cheek = px(234) if 234 < n_lm else (center_x - lip_width, (upper_y + lower_y) / 2)
+        right_cheek= px(454) if 454 < n_lm else (center_x + lip_width, (upper_y + lower_y) / 2)
+        upper_left = mean_px(81, 82, 80)
+        upper_right= mean_px(311, 312, 310)
+        lower_left = mean_px(88, 178, 87)
+        lower_right= mean_px(317, 318, 402)
+
         return {
-            "upper_x": upper_x,
-            "upper_y": upper_y,
-            "lower_x": lower_x,
-            "lower_y": lower_y,
-            "center_x": center_x,
-            "width": lip_width,
+            "upper_x": upper_x,    "upper_y": upper_y,
+            "lower_x": lower_x,    "lower_y": lower_y,
+            "center_x": center_x,  "width": lip_width,
             "natural_gap": natural_gap,
             "mouth_center_x": int(center_x),
             "mouth_center_y": int((upper_y + lower_y) / 2.0),
+            "left_corner_pt":  left_corner,   "right_corner_pt": right_corner,
+            "upper_left_pt":   upper_left,    "upper_right_pt":  upper_right,
+            "lower_left_pt":   lower_left,    "lower_right_pt":  lower_right,
+            "nose_tip_pt":     nose_tip,      "chin_pt":         chin,
+            "left_cheek_pt":   left_cheek,    "right_cheek_pt":  right_cheek,
             "left_eye":  _eye_rect(159, 145,  33, 133),
             "right_eye": _eye_rect(386, 374, 263, 362),
         }
@@ -133,6 +150,63 @@ def _detect_lip_data(image: np.ndarray) -> dict | None:
         logger.debug("_detect_lip_data failed: %s", exc)
         return None
 
+
+
+# ---------------------------------------------------------------------------
+# Thin-plate spline helpers
+# ---------------------------------------------------------------------------
+def _tps_kernel(r2: np.ndarray) -> np.ndarray:
+    """U(r) = r² log(r²), U(0)=0."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(r2 < 1e-12, 0.0, r2 * np.log(np.maximum(r2, 1e-12)))
+
+
+def _solve_tps_unit(
+    ctrl_pts: np.ndarray,
+    displacements: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """Solve a TPS system and return (w_x, a_x, w_y, a_y) packed for evaluation.
+
+    ctrl_pts:      (n, 2) float64
+    displacements: (n, 2) unit displacement per control point (at mouth_open=1)
+
+    Returns w_coeff: (n+3, 2) float32  — first n rows are RBF weights,
+                                         last 3 rows are polynomial [a0, ax, ay].
+    Returns ctrl_pts_out: same ctrl_pts as float32 (needed at eval time).
+    """
+    n = len(ctrl_pts)
+    diff = ctrl_pts[:, None] - ctrl_pts[None]       # (n,n,2)
+    K = _tps_kernel((diff ** 2).sum(axis=2))         # (n,n)
+    K += np.eye(n) * 1e-3                            # regularisation
+    P = np.hstack([np.ones((n, 1)), ctrl_pts])       # (n,3)
+    M = np.block([[K, P], [P.T, np.zeros((3, 3))]])  # (n+3, n+3)
+    rhs = np.vstack([displacements, np.zeros((3, 2))])  # (n+3, 2)
+    try:
+        coeff = np.linalg.solve(M, rhs)              # (n+3, 2)
+    except np.linalg.LinAlgError:
+        return None, None
+    return coeff.astype(np.float32), ctrl_pts.astype(np.float32)
+
+
+def _eval_tps(
+    coeff: np.ndarray,
+    ctrl_pts: np.ndarray,
+    grid_x: np.ndarray,
+    grid_y: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate precomputed TPS on a pixel grid.
+    Returns (dx_field, dy_field) as float32 (H, W).
+    """
+    H, W = grid_x.shape
+    n = len(ctrl_pts)
+    pts = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1).astype(np.float32)  # (H*W, 2)
+    diff = pts[:, None] - ctrl_pts[None]         # (H*W, n, 2)
+    U    = _tps_kernel((diff ** 2).sum(axis=2))  # (H*W, n)  float32
+    # poly basis [1, x, y]
+    P    = np.hstack([np.ones((len(pts), 1), dtype=np.float32), pts])  # (H*W, 3)
+    basis = np.hstack([U, P]).astype(np.float32)  # (H*W, n+3)
+    disps = basis @ coeff                          # (H*W, 2)
+    return disps[:, 0].reshape(H, W), disps[:, 1].reshape(H, W)
 
 
 def load_source_frame(
@@ -187,6 +261,15 @@ class PlaceholderTrack(VideoStreamTrack):
             else:
                 logger.warning("MediaPipe could not detect a face – using edge-based mouth-centre fallback.")
                 self._mouth_center_x, self._mouth_center_y = self._detect_mouth_center(source_frame)
+        # TPS precomputed displacement maps ----------------------------------
+        self._tps_coeff: np.ndarray | None = None
+        self._tps_ctrl:  np.ndarray | None = None
+        if self._lip_data is not None:
+            self._tps_coeff, self._tps_ctrl = self._precompute_tps(self._lip_data)
+            if self._tps_coeff is not None:
+                logger.info("TPS mouth warp precomputed (%d control points).", len(self._tps_ctrl))
+            else:
+                logger.warning("TPS precomputation failed – falling back to center warp.")
         # Motion state -------------------------------------------------------
         self._speech_until = 0.0
         self._a2f_started_at = 0.0
@@ -400,9 +483,118 @@ class PlaceholderTrack(VideoStreamTrack):
         image[top : top + mouth_h, 176:336] = (255, 0, 0)
         return image
 
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _precompute_tps(ld: dict) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+        """Build TPS control-point set and solve the system once per session.
+
+        Control points:
+          • 8 mouth landmarks  (upper centre, upper-left, upper-right,
+                               lower centre, lower-left, lower-right,
+                               left corner, right corner)
+          • 6 face anchors     (nose tip, chin, left cheek, right cheek,
+                               plus two mid-face points derived from geometry)
+          • 4 image-corner anchors
+        Anchor displacement = (0, 0) — they do not move.
+        """
+        upper_x  = ld["upper_x"];  upper_y  = ld["upper_y"]
+        lower_x  = ld["lower_x"];  lower_y  = ld["lower_y"]
+        natural_gap = ld["natural_gap"]
+        lip_width   = ld["width"]
+
+        max_shift   = max(natural_gap * 4.0, lip_width * 0.48) + 28.0
+        upper_shift = max_shift * 0.42   # upward   (negative dy)
+        lower_shift = max_shift * 0.58   # downward (positive dy)
+        corner_dy   = lower_shift * 0.18  # corners dip very slightly
+        corner_dx   = lip_width   * 0.06  # corners spread outward
+
+        def pt(key: str) -> list[float]:
+            x, y = ld[key]
+            return [x, y]
+
+        # fmt: off
+        src_list = [
+            # mouth
+            [upper_x,                  upper_y       ],  # 0 upper-centre
+            list(ld["upper_left_pt"  ]),                  # 1 upper-left
+            list(ld["upper_right_pt" ]),                  # 2 upper-right
+            [lower_x,                  lower_y       ],  # 3 lower-centre
+            list(ld["lower_left_pt"  ]),                  # 4 lower-left
+            list(ld["lower_right_pt" ]),                  # 5 lower-right
+            list(ld["left_corner_pt" ]),                  # 6 left corner
+            list(ld["right_corner_pt"]),                  # 7 right corner
+            # face anchors
+            list(ld["nose_tip_pt"    ]),                  # 8
+            list(ld["chin_pt"        ]),                  # 9
+            list(ld["left_cheek_pt" ]),                  # 10
+            list(ld["right_cheek_pt"]),                  # 11
+            # image corners (hard anchors)
+            [0.0,   0.0  ],                               # 12
+            [511.0, 0.0  ],                               # 13
+            [0.0,   511.0],                               # 14
+            [511.0, 511.0],                               # 15
+        ]
+        disp_list = [
+            # mouth — dy negative = moves up
+            [  0.0,          -upper_shift ],  # 0
+            [  0.0,          -upper_shift * 0.85],  # 1
+            [  0.0,          -upper_shift * 0.85],  # 2
+            [  0.0,          +lower_shift ],  # 3
+            [  0.0,          +lower_shift * 0.85],  # 4
+            [  0.0,          +lower_shift * 0.85],  # 5
+            [ -corner_dx,    +corner_dy   ],  # 6 left corner opens left+down
+            [ +corner_dx,    +corner_dy   ],  # 7 right corner opens right+down
+            # anchors — zero displacement
+            [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0],
+            [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0],
+        ]
+        # fmt: on
+        ctrl = np.array(src_list,  dtype=np.float64)
+        disp = np.array(disp_list, dtype=np.float64)
+        return _solve_tps_unit(ctrl, disp)
+
+    def _apply_tps_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
+        """Thin-plate spline warp — the only per-frame cost is one (H,W) multiply."""
+        H, W = image.shape[:2]
+        grid_x, grid_y = np.meshgrid(
+            np.arange(W, dtype=np.float32),
+            np.arange(H, dtype=np.float32),
+        )
+        dx, dy = _eval_tps(self._tps_coeff, self._tps_ctrl, grid_x, grid_y)
+        # reverse map: output pixel at (y,x) samples source at (y+dy*t, x+dx*t)
+        warp_x = grid_x + dx * mouth_open
+        warp_y = grid_y + dy * mouth_open
+        result = cv2.remap(
+            image,
+            warp_x,
+            warp_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        # Mouth-cavity shadow scaled to actual opening
+        lip_mid_y = (self._lip_data["upper_y"] + self._lip_data["lower_y"]) / 2.0  # type: ignore[index]
+        gap_half  = max(mouth_open * (self._lip_data["natural_gap"] * 4.0 + 28.0) * 0.40, 1.0)  # type: ignore[index]
+        cx        = self._lip_data["center_x"]    # type: ignore[index]
+        lw        = self._lip_data["width"]        # type: ignore[index]
+        inner_dy  = np.abs(grid_y - lip_mid_y)
+        inner_dx  = np.abs(grid_x - cx) / (lw * 0.42 + 1e-6)
+        shadow_mask = (
+            np.clip(1.0 - inner_dx, 0.0, 1.0)
+            * np.clip(1.0 - inner_dy / gap_half, 0.0, 1.0)
+            * float(np.clip(0.08 + mouth_open * 0.26, 0.0, 0.38))
+        )[..., None]
+        dark = np.full_like(result, (16, 12, 18), dtype=np.uint8)
+        return np.clip(
+            result.astype(np.float32) * (1.0 - shadow_mask)
+            + dark.astype(np.float32) * shadow_mask,
+            0, 255,
+        ).astype(np.uint8)
+
     def _apply_mouth_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
         if mouth_open <= 0.01:
             return image
+        if self._tps_coeff is not None:
+            return self._apply_tps_warp(image, mouth_open)
         return self._apply_center_warp(image, mouth_open)
 
     def _apply_landmark_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
