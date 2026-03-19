@@ -283,7 +283,12 @@ class PlaceholderTrack(VideoStreamTrack):
 
     def set_text(self, text: str) -> None:
         self.label = (text or "live").strip()[:120]
-        self._speech_until = time.monotonic() + 4.0
+        # Estimate TTS duration from character count.
+        # ElevenLabs speaks at roughly 13 chars/sec; add 1.5 s buffer for
+        # network latency before audio playback actually starts.
+        char_count = max(len((text or "").strip()), 1)
+        estimated_duration = char_count / 13.0 + 1.5
+        self._speech_until = time.monotonic() + estimated_duration
 
     def load_a2f_motion(self, output_dir: str | None) -> bool:
         if not output_dir:
@@ -362,9 +367,11 @@ class PlaceholderTrack(VideoStreamTrack):
             self._a2f_frames = []
 
         if now < self._speech_until:
-            # Slightly faster sine + higher base so fallback animation is
-            # more visually in-step with typical speech cadence.
-            return 0.35 + max(0.0, np.sin(now * 15.0)) * 0.65
+            # Fade the animation out over the last 0.8 s so lips close
+            # smoothly rather than snapping shut.
+            time_left = self._speech_until - now
+            fade = float(np.clip(time_left / 0.8, 0.0, 1.0))
+            return fade * (0.35 + max(0.0, np.sin(now * 15.0)) * 0.65)
 
         return 0.0
 
