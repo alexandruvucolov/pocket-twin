@@ -238,6 +238,8 @@ def prepare_avatar(
         frame_path = str(full_imgs_path / "00000000.png")
         cv2.imwrite(frame_path, source_frame_bgr)
 
+        used_fallback_bbox = False
+
         if _preprocess_available is not False:
             try:
                 from musetalk.utils.preprocessing import get_landmark_and_bbox   # noqa: PLC0415
@@ -256,13 +258,14 @@ def prepare_avatar(
             coord_list, frame_list = [], []
 
         if not coord_list or not frame_list:
+            used_fallback_bbox = True
             frame = source_frame_bgr
             h, w = frame.shape[:2]
-            # Fallback ROI: central lower-face-biased box (works without DWPose).
-            x1 = max(0, int(w * 0.20))
-            y1 = max(0, int(h * 0.18))
-            x2 = min(w, int(w * 0.80))
-            y2 = min(h, int(h * 0.92))
+            # Fallback ROI: lips-focused region (avoid chin/neck dissolve artifacts).
+            x1 = max(0, int(w * 0.32))
+            y1 = max(0, int(h * 0.44))
+            x2 = min(w, int(w * 0.68))
+            y2 = min(h, int(h * 0.78))
             if x2 <= x1 or y2 <= y1:
                 x1, y1, x2, y2 = 0, 0, w, h
             coord_list = [(x1, y1, x2, y2)]
@@ -271,7 +274,7 @@ def prepare_avatar(
         coord_placeholder = (0.0, 0.0, 0.0, 0.0)
         vae = _models["vae"]
         fp  = _models["fp"]
-        extra_margin = 10
+        extra_margin = 2 if used_fallback_bbox else 10
 
         input_latent_list: list = []
         for bbox, frame in zip(coord_list, frame_list):
@@ -295,9 +298,15 @@ def prepare_avatar(
         mask_coords_list_cycle: list = []
         for i, frame in enumerate(frame_list_cycle):
             x1, y1, x2, y2 = coord_list_cycle[i]
-            mask, crop_box = get_image_prepare_material(
-                frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
-            )
+            mask_mode = "mouth" if used_fallback_bbox else "jaw"
+            try:
+                mask, crop_box = get_image_prepare_material(
+                    frame, [x1, y1, x2, y2], fp=fp, mode=mask_mode
+                )
+            except Exception:
+                mask, crop_box = get_image_prepare_material(
+                    frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
+                )
             mask_list_cycle.append(mask)
             mask_coords_list_cycle.append(crop_box)
 
