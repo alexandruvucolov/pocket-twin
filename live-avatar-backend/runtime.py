@@ -884,11 +884,6 @@ class PlaceholderTrack(VideoStreamTrack):
         offset_y = max(0, min(offset_y, max_y))
         image = scaled[offset_y : offset_y + 512, offset_x : offset_x + 512].copy()
 
-        if speaking and not has_a2f_motion:
-            highlight = image.copy()
-            cv2.circle(highlight, (256, 356), 72, (90, 90, 180), -1)
-            cv2.addWeighted(highlight, 0.08, image, 0.92, 0, image)
-
         image = self._apply_mouth_warp(image, mouth_open)
         blink = self._blink_amount(now)
         if blink > 0.01:
