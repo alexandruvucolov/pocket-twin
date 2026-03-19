@@ -16,9 +16,23 @@ fi
 # causes torchvision::nms op-registration failures inside diffusers because the
 # torchvision shared library is never linked into the venv Python process.
 python3 -m pip install -q \
-  "huggingface-hub>=1.0.0" \
-  "diffusers>=0.30.0" \
+  "huggingface-hub>=0.24.0,<1.0.0" \
+  "transformers>=4.39.0,<5.0.0" \
+  "diffusers>=0.30.0,<0.31.0" \
   "accelerate>=0.34.0"
+
+# Validate torchvision custom ops (nms). If missing, install the official
+# matching PyTorch/cu124 wheels into SYSTEM Python once.
+if ! python3 - <<'PY'
+import torch
+ok = hasattr(torch.ops, "torchvision") and hasattr(torch.ops.torchvision, "nms")
+raise SystemExit(0 if ok else 1)
+PY
+then
+  echo "[start] torchvision::nms missing; installing matching torch/torchvision cu124 wheels..."
+  python3 -m pip install -q --extra-index-url https://download.pytorch.org/whl/cu124 \
+    "torch==2.4.1+cu124" "torchvision==0.19.1+cu124"
+fi
 
 python3 -m venv .venv
 source .venv/bin/activate

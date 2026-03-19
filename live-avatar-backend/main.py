@@ -403,6 +403,9 @@ async def _add_ice_candidate(
     pc: RTCPeerConnection,
     payload: dict[str, str | int | None],
 ) -> None:
+    if pc.connectionState in {"closed", "failed"}:
+        return
+
     candidate_value = payload.get("candidate")
     if not candidate_value:
         return
@@ -530,6 +533,9 @@ async def submit_ice(session_id: str, body: IceBody) -> dict[str, bool | str]:
     try:
         await _add_ice_candidate(pc, payload)
     except Exception as exc:
+        if "InvalidStateError" in type(exc).__name__ or "invalid state" in str(exc).lower():
+            logger.warning("Ignoring late ICE candidate for closed session %s", session_id)
+            return {"ok": True, "sessionId": session_id, "ignored": True}
         logger.exception("Failed to add ICE candidate for session %s", session_id)
         raise HTTPException(status_code=400, detail=f"Invalid ICE candidate: {exc}") from exc
 
