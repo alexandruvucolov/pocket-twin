@@ -27,6 +27,14 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Make system-installed packages (torch, mmcv, etc.) visible when the backend
+# runs inside its own .venv which does not include those heavy deps.
+# ---------------------------------------------------------------------------
+_SYSTEM_SITE = "/usr/local/lib/python3.11/dist-packages"
+if os.path.isdir(_SYSTEM_SITE) and _SYSTEM_SITE not in sys.path:
+    sys.path.insert(0, _SYSTEM_SITE)
+
+# ---------------------------------------------------------------------------
 # Path to the cloned MuseTalk repository
 # ---------------------------------------------------------------------------
 MUSETALK_DIR = Path(os.environ.get("MUSETALK_DIR", "/workspace/MuseTalk"))
