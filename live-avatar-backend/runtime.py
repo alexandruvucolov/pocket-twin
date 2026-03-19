@@ -401,17 +401,8 @@ class PlaceholderTrack(VideoStreamTrack):
         return image
 
     def _apply_mouth_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
-        """Warp the mouth region to simulate lip movement.
-
-        If MediaPipe detected lip landmarks at session-creation time, uses the
-        precise upper/lower lip positions for a clean, natural-looking warp.
-        Otherwise falls back to the original heuristic center-based warp.
-        """
         if mouth_open <= 0.01:
             return image
-
-        if self._lip_data is not None:
-            return self._apply_landmark_warp(image, mouth_open)
         return self._apply_center_warp(image, mouth_open)
 
     def _apply_landmark_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
@@ -533,11 +524,11 @@ class PlaceholderTrack(VideoStreamTrack):
 
         warp_x = grid_x.copy()
         warp_y = grid_y.copy()
-        jaw_drop = mouth_open * 14.0 * lower_face_mask
-        upper_pull = mouth_open * 5.0 * mouth_mask * np.clip((center_y - grid_y) / 75.0, 0.0, 1.0)
-        cheek_pull = mouth_open * 4.0 * dx * lower_face_mask
-        lip_spread = mouth_open * 6.0 * mouth_dx * mouth_mask
-        lip_open = mouth_open * 16.0 * np.sign(mouth_dy) * np.power(np.abs(mouth_dy), 0.8) * mouth_mask
+        jaw_drop = mouth_open * 26.0 * lower_face_mask
+        upper_pull = mouth_open * 10.0 * mouth_mask * np.clip((center_y - grid_y) / 75.0, 0.0, 1.0)
+        cheek_pull = mouth_open * 5.0 * dx * lower_face_mask
+        lip_spread = mouth_open * 8.0 * mouth_dx * mouth_mask
+        lip_open = mouth_open * 30.0 * np.sign(mouth_dy) * np.power(np.abs(mouth_dy), 0.8) * mouth_mask
 
         warp_y += jaw_drop - upper_pull + lip_open
         warp_x += cheek_pull + lip_spread
@@ -551,7 +542,7 @@ class PlaceholderTrack(VideoStreamTrack):
         )
 
         # Remove the synthetic violet mouth cavity and use only a subtle natural shadow.
-        mouth_shadow = np.clip(0.08 + mouth_open * 0.12, 0.0, 0.22)
+        mouth_shadow = np.clip(0.10 + mouth_open * 0.28, 0.0, 0.42)
         shadow_mask = (inner_mouth_mask * mouth_shadow)[..., None]
         shadow_tint = np.full_like(result, (18, 18, 24), dtype=np.uint8)
         result = np.clip(
