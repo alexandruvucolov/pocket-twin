@@ -564,18 +564,42 @@ def synthesize(
                         if rf.max() <= 1.0 + 1e-6:
                             rf = (rf * 255.0).clip(0, 255)
                         rf = rf.astype(np.uint8)
+                    # MuseTalk VAE outputs RGB; convert to BGR for OpenCV blending
+                    if rf.ndim == 3 and rf.shape[2] == 3:
+                        rf = cv2.cvtColor(rf, cv2.COLOR_RGB2BGR)
                     res_frame_list.append(rf)
 
         # ── 3. Blend generated mouth crops back onto original frames ───────
         n_cycle = len(prep.frame_list_cycle)
         combined: list[np.ndarray] = []
+
+        # Save raw VAE output for diagnostics (mid frame)
+        try:
+            mid_idx = len(res_frame_list) // 2
+            if res_frame_list:
+                cv2.imwrite("/tmp/musetalk_raw_vae.jpg", res_frame_list[mid_idx])
+                # Also save the source crop at same bbox for comparison
+                src_frame = prep.frame_list_cycle[0]
+                x1, y1, x2, y2 = prep.coord_list_cycle[0]
+                src_crop = cv2.resize(src_frame[y1:y2, x1:x2], (256, 256))
+                cv2.imwrite("/tmp/musetalk_src_crop.jpg", src_crop)
+                logger.info("MuseTalk: raw VAE output saved to /tmp/musetalk_raw_vae.jpg (max=%.1f min=%.1f)",
+                            float(res_frame_list[mid_idx].max()), float(res_frame_list[mid_idx].min()))
+        except Exception as _e:
+            logger.warning("MuseTalk: could not save diagnostic frames: %s", _e)
+
         for i, res_frame in enumerate(res_frame_list):
             bbox = prep.coord_list_cycle[i % n_cycle]
             ori  = copy.deepcopy(prep.frame_list_cycle[i % n_cycle])
             x1, y1, x2, y2 = bbox
+            # res_frame is a 256x256 full crop of the bbox region.
+            # Resize it back to the original bbox dimensions.
+            bh = y2 - y1
+            bw = x2 - x1
             try:
                 res_frame = cv2.resize(
-                    res_frame.astype(np.uint8), (x2 - x1, y2 - y1)
+                    res_frame.astype(np.uint8), (bw, bh),
+                    interpolation=cv2.INTER_LANCZOS4,
                 )
             except Exception:
                 combined.append(ori)
