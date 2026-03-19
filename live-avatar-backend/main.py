@@ -545,7 +545,12 @@ async def submit_ice(session_id: str, body: IceBody) -> dict[str, bool | str]:
 @app.post("/api/live-avatar/sessions/{session_id}/speak")
 async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
     _, track = get_session(session_id)
-    track.set_text(body.text)
+
+    # Prioritize MuseTalk visuals: when MuseTalk is enabled we avoid triggering
+    # the TPS mouth-open simulation path (`set_text`) so users don't see the
+    # old heuristic animation while waiting for synthesized frames.
+    if not (_MUSETALK_ENABLED and isinstance(track, PlaceholderTrack)):
+        track.set_text(body.text)
 
     if A2F_CLIENT.is_configured:
         try:

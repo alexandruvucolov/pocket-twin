@@ -297,11 +297,17 @@ class PlaceholderTrack(VideoStreamTrack):
         logger.info("MuseTalk: queued %d frames at %d fps", len(frames), fps)
 
     def set_text(self, text: str) -> None:
-        self.label = (text or "live").strip()[:120]
+        clean = (text or "").strip()
+        self.label = (clean or "live")[:120]
+
+        if not clean:
+            self._speech_until = 0.0
+            return
+
         # Estimate TTS duration from character count.
         # ElevenLabs speaks at roughly 13 chars/sec; add 1.5 s buffer for
         # network latency before audio playback actually starts.
-        char_count = max(len((text or "").strip()), 1)
+        char_count = max(len(clean), 1)
         estimated_duration = char_count / 13.0 + 1.5
         self._speech_until = time.monotonic() + estimated_duration
 
