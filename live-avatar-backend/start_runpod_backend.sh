@@ -47,6 +47,33 @@ print(f"Downloaded SD-VAE weights to {root}")
 PY
 fi
 
+# Ensure MuseTalk v1.5 UNet files exist.
+if [[ ! -f "/workspace/MuseTalk/MuseTalk/models/musetalkV15/musetalk.json" || ! -f "/workspace/MuseTalk/MuseTalk/models/musetalkV15/unet.pth" ]]; then
+  echo "[start] musetalkV15 files missing; downloading from TMElyralab/MuseTalk..."
+  python3 - <<'PY'
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+
+root = Path("/workspace/MuseTalk/MuseTalk/models/musetalkV15")
+root.mkdir(parents=True, exist_ok=True)
+
+files = {
+  "musetalkV15/musetalk.json": "musetalk.json",
+  "musetalkV15/unet.pth": "unet.pth",
+}
+
+for remote_name, local_name in files.items():
+  src = hf_hub_download(
+    repo_id="TMElyralab/MuseTalk",
+    filename=remote_name,
+  )
+  dst = root / local_name
+  dst.write_bytes(Path(src).read_bytes())
+
+print(f"Downloaded MuseTalk v1.5 files to {root}")
+PY
+fi
+
 # Validate torchvision custom ops (nms). If missing, install the official
 # matching PyTorch/cu124 wheels into SYSTEM Python once.
 if ! python3 - <<'PY'

@@ -35,6 +35,10 @@ _SYSTEM_SITE = "/usr/local/lib/python3.11/dist-packages"
 if os.path.isdir(_SYSTEM_SITE) and _SYSTEM_SITE not in sys.path:
     sys.path.append(_SYSTEM_SITE)  # append so venv packages take priority
 
+# SD-VAE checkpoints we provision are .bin-based; disabling safetensors lookup
+# avoids noisy "diffusion_pytorch_model.safetensors not found" warnings.
+os.environ.setdefault("DIFFUSERS_USE_SAFETENSORS", "0")
+
 # ---------------------------------------------------------------------------
 # Path to the cloned MuseTalk repository
 # ---------------------------------------------------------------------------
