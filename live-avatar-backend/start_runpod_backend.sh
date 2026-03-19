@@ -15,11 +15,15 @@ fi
 # op registrations.  Installing these into the venv while torch stays in system
 # causes torchvision::nms op-registration failures inside diffusers because the
 # torchvision shared library is never linked into the venv Python process.
-python3 -m pip install -q \
-  "huggingface-hub>=0.24.0,<1.0.0" \
-  "transformers>=4.39.0,<5.0.0" \
-  "diffusers>=0.30.0,<0.31.0" \
-  "accelerate>=0.34.0"
+# Clean-reinstall a known-good MuseTalk stack in SYSTEM Python.
+# This avoids mixed/partial upgrades that break imports like
+# "Could not import module 'PreTrainedModel'".
+python3 -m pip uninstall -y transformers tokenizers diffusers accelerate huggingface-hub 2>/dev/null || true
+python3 -m pip install -q --upgrade \
+  "huggingface-hub==0.24.7" \
+  "transformers==4.48.0" \
+  "diffusers==0.30.3" \
+  "accelerate==0.34.2"
 
 # Validate torchvision custom ops (nms). If missing, install the official
 # matching PyTorch/cu124 wheels into SYSTEM Python once.
