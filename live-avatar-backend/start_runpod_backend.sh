@@ -74,6 +74,22 @@ print(f"Downloaded MuseTalk v1.5 files to {root}")
 PY
 fi
 
+# Ensure Whisper weights exist for `WhisperModel.from_pretrained(models/whisper)`.
+if [[ ! -f "/workspace/MuseTalk/MuseTalk/models/whisper/pytorch_model.bin" ]]; then
+  echo "[start] whisper weights missing; downloading openai/whisper-small..."
+  python3 - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="openai/whisper-small",
+    local_dir="/workspace/MuseTalk/MuseTalk/models/whisper",
+    local_dir_use_symlinks=False,
+)
+
+print("Downloaded Whisper weights to /workspace/MuseTalk/MuseTalk/models/whisper")
+PY
+fi
+
 # Validate torchvision custom ops (nms). If missing, install the official
 # matching PyTorch/cu124 wheels into SYSTEM Python once.
 if ! python3 - <<'PY'
