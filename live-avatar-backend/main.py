@@ -579,10 +579,14 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
     # If ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID are not set, or MuseTalk is
     # not installed, this is a no-op and TPS warp continues as before.
     if _MUSETALK_ENABLED and isinstance(track, PlaceholderTrack) and track.source_frame is not None:
-        logger.info("MuseTalk: scheduling speak task for session %s", session_id)
-        asyncio.create_task(
-            _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID)
-        )
+        if track._musetalk_busy:
+            logger.info("MuseTalk: skipping speak task (synthesis already in progress)")
+        else:
+            track._musetalk_busy = True
+            logger.info("MuseTalk: scheduling speak task for session %s", session_id)
+            asyncio.create_task(
+                _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID)
+            )
     elif _MUSETALK_ENABLED:
         logger.warning(
             "MuseTalk: speak task NOT scheduled — track=%s source_frame=%s",
@@ -666,6 +670,8 @@ async def _musetalk_speak(
             track.set_musetalk_frames(frames, fps=25)
             logger.info("MuseTalk: applied %d synthesized frames", len(frames))
         else:
+            track._musetalk_busy = False  # release lock on failure
+        else:
             reason = ""
             try:
                 reason = str(musetalk_infer.get_last_synthesize_reason() or "")
@@ -690,8 +696,10 @@ async def _musetalk_speak(
             exc.response.status_code if exc.response is not None else "unknown",
             body or str(exc),
         )
+        track._musetalk_busy = False
     except Exception as exc:
         logger.warning("MuseTalk: speak pipeline failed: %s", exc)
+        track._musetalk_busy = False
 
 
 @app.delete("/api/live-avatar/sessions/{session_id}")

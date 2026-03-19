@@ -557,7 +557,14 @@ def synthesize(
                 ).sample
                 pred = pred.to(device=device, dtype=vae.vae.dtype)
                 for res_frame in vae.decode_latents(pred):
-                    res_frame_list.append(res_frame)
+                    # VAE decoders may return float32 in [0,1] or [0,255].
+                    # Normalise to uint8 [0,255] so blending works correctly.
+                    rf = np.array(res_frame)
+                    if rf.dtype != np.uint8:
+                        if rf.max() <= 1.0 + 1e-6:
+                            rf = (rf * 255.0).clip(0, 255)
+                        rf = rf.astype(np.uint8)
+                    res_frame_list.append(rf)
 
         # ── 3. Blend generated mouth crops back onto original frames ───────
         n_cycle = len(prep.frame_list_cycle)
@@ -585,6 +592,15 @@ def synthesize(
             "MuseTalk synthesized %d frames in %.2fs",
             len(combined), time.monotonic() - t0,
         )
+        # Save debug frames so we can visually verify blend quality
+        try:
+            if combined:
+                cv2.imwrite("/tmp/musetalk_frame_000.jpg", combined[0])
+                mid = len(combined) // 2
+                cv2.imwrite("/tmp/musetalk_frame_mid.jpg", combined[mid])
+                logger.info("MuseTalk: debug frames saved to /tmp/musetalk_frame_000.jpg and /tmp/musetalk_frame_mid.jpg")
+        except Exception:
+            pass
         if not combined:
             _last_synthesize_reason = "pipeline completed but produced 0 blended frames"
         else:

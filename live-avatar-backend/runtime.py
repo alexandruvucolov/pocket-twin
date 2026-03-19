@@ -286,15 +286,21 @@ class PlaceholderTrack(VideoStreamTrack):
         self._musetalk_frames: list[np.ndarray] = []
         self._musetalk_frame_start: float = 0.0
         self._musetalk_fps: int = 25
+        self._musetalk_frame_idx_logged: int = -1  # for recv() diagnostic
+        # Prevent multiple concurrent synthesis tasks overwriting each other
+        self._musetalk_busy: bool = False
         # Per-session MuseTalk avatar preparation cache (set lazily on first speak)
         self._musetalk_prep = None
 
     def set_musetalk_frames(self, frames: list, fps: int = 25) -> None:
         """Store pre-rendered MuseTalk frames to be streamed via recv()."""
         self._musetalk_fps = fps
-        self._musetalk_frames = frames
+        self._musetalk_frames = list(frames)  # copy so caller can't mutate
         self._musetalk_frame_start = time.monotonic()
-        logger.info("MuseTalk: queued %d frames at %d fps", len(frames), fps)
+        self._musetalk_frame_idx_logged = -1
+        self._musetalk_busy = False
+        logger.info("MuseTalk: queued %d frames at %d fps (%.1fs of video)",
+                    len(frames), fps, len(frames) / max(fps, 1))
 
     def set_text(self, text: str) -> None:
         clean = (text or "").strip()
@@ -896,12 +902,18 @@ class PlaceholderTrack(VideoStreamTrack):
         # ── MuseTalk path: serve pre-rendered lip-sync frames ─────────────
         if self._musetalk_frames:
             elapsed = max(now - self._musetalk_frame_start, 0.0)
-            idx = min(int(elapsed * self._musetalk_fps), len(self._musetalk_frames) - 1)
+            total = len(self._musetalk_frames)
+            idx = min(int(elapsed * self._musetalk_fps), total - 1)
             image = self._musetalk_frames[idx].copy()
+            # Log start and periodically
+            if self._musetalk_frame_idx_logged < 0:
+                logger.info("MuseTalk recv: SERVING frames (total=%d, fps=%d, %.1fs video)",
+                            total, self._musetalk_fps, total / max(self._musetalk_fps, 1))
+                self._musetalk_frame_idx_logged = 0
             # Clear the queue once the last frame is reached
-            if idx >= len(self._musetalk_frames) - 1:
+            if idx >= total - 1:
                 self._musetalk_frames = []
-                logger.debug("MuseTalk frame queue exhausted")
+                logger.info("MuseTalk recv: frame queue exhausted after %.1fs", elapsed)
             # Still apply blink on top of MuseTalk frames
             blink = self._blink_amount(now)
             if blink > 0.01:
