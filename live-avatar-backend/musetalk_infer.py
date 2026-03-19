@@ -111,8 +111,10 @@ def _get_face_cascade():
 def _detect_lip_bbox_opencv(
     frame_bgr: np.ndarray,
 ) -> tuple[int, int, int, int] | None:
-    """Use OpenCV Haarcascade to get a face bbox, then derive a lower-face ROI
-    large enough for MuseTalk's UNet (which expects a full-face-scale crop).
+    """Use OpenCV Haarcascade to detect the full face bbox.
+
+    MuseTalk was trained on full-face 256x256 crops, so we return the entire
+    face region. Blending is restricted to the mouth area separately.
 
     Returns (x1, y1, x2, y2) clipped to frame bounds, or None.
     """
@@ -133,37 +135,34 @@ def _detect_lip_bbox_opencv(
         return None
     faces_sorted = sorted(faces.tolist(), key=lambda f: f[2] * f[3], reverse=True)
     fx, fy, fw, fh = faces_sorted[0]
-    # Use the FULL lower face: from ~45% of face height down, full width.
-    # MuseTalk UNet was trained on full-face 256x256 crops so we need a large
-    # region — not just lips — for the model to work correctly.
-    x1 = max(0, fx)
-    x2 = min(w, fx + fw)
-    y1 = max(0, fy + int(fh * 0.45))  # from mid-nose down
-    y2 = min(h, fy + fh + int(fh * 0.05))  # slightly below chin
-    if x2 - x1 < 64 or y2 - y1 < 32:
+    # Add small padding around the full face
+    pad = int(fw * 0.05)
+    x1 = max(0, fx - pad)
+    y1 = max(0, fy - pad)
+    x2 = min(w, fx + fw + pad)
+    y2 = min(h, fy + fh + pad)
+    if x2 - x1 < 64 or y2 - y1 < 64:
         return None
-    logger.debug("OpenCV lower-face bbox: (%d,%d,%d,%d) from face (%d,%d,%d,%d)", x1, y1, x2, y2, fx, fy, fw, fh)
+    logger.debug("OpenCV full-face bbox: (%d,%d,%d,%d)", x1, y1, x2, y2)
     return (x1, y1, x2, y2)
 
 
 def _make_lip_alpha_mask(
     crop_h: int, crop_w: int,
 ) -> np.ndarray:
-    """Create a float32 [0,1] elliptical mask covering the mouth+chin area of
-    a lower-face crop.  The crop spans from mid-nose to chin so the mouth
-    sits at roughly 30-70% of crop height.
-
-    The mask is Gaussian-blurred for smooth blending edges.
+    """Create a float32 [0,1] elliptical mask for the MOUTH region within a
+    full-face crop.  In a frontal face, the mouth sits at ~65-80% of the face
+    height.  We centre the ellipse there so only the mouth area gets blended.
     """
     mask = np.zeros((crop_h, crop_w), dtype=np.float32)
-    # Centre ellipse at ~50% height (middle of lower face = mouth area)
-    cy = int(crop_h * 0.50)
+    # Mouth centre at ~72% of face height, horizontally centred
+    cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    # Wide ellipse: covers 90% of width, 65% of height
-    rx = int(crop_w * 0.45)
-    ry = int(crop_h * 0.38)
+    # Ellipse: ~50% of face width, ~18% of face height
+    rx = int(crop_w * 0.28)
+    ry = int(crop_h * 0.12)
     cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    # Soft feather — 21px gives ~10px blend zone
+    # Smooth blend edge ~15px
     mask = cv2.GaussianBlur(mask, (21, 21), 0)
     return mask
 
@@ -373,19 +372,19 @@ def prepare_avatar(
             if opencv_lip_bbox is not None:
                 x1, y1, x2, y2 = opencv_lip_bbox
                 logger.info(
-                    "Fallback: OpenCV lower-face bbox detected: (%d,%d,%d,%d) size=%dx%d",
+                    "Fallback: OpenCV full-face bbox: (%d,%d,%d,%d) size=%dx%d",
                     x1, y1, x2, y2, x2-x1, y2-y1,
                 )
             else:
-                # Last-resort: lower half of image, full width
-                x1 = max(0, int(w * 0.15))
-                y1 = max(0, int(h * 0.40))
-                x2 = min(w, int(w * 0.85))
-                y2 = min(h, int(h * 0.90))
+                # Last-resort: full image as face region
+                x1 = max(0, int(w * 0.10))
+                y1 = max(0, int(h * 0.05))
+                x2 = min(w, int(w * 0.90))
+                y2 = min(h, int(h * 0.95))
                 if x2 <= x1 or y2 <= y1:
                     x1, y1, x2, y2 = 0, 0, w, h
                 logger.info(
-                    "Fallback: proportional lower-face bbox: (%d,%d,%d,%d)",
+                    "Fallback: proportional full-face bbox: (%d,%d,%d,%d)",
                     x1, y1, x2, y2,
                 )
             coord_list = [(x1, y1, x2, y2)]
