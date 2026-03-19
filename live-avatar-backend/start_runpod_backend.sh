@@ -23,6 +23,10 @@ python3 -m pip install -q \
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
+# Remove MuseTalk-related packages from the venv — they must live in system
+# Python alongside torch/torchvision so all C extensions share the same process.
+# pip uninstall is a no-op if already absent, so this is always safe.
+pip uninstall -y diffusers accelerate huggingface-hub transformers tokenizers 2>/dev/null || true
 pip install -r requirements.txt
 set -a
 source .env
