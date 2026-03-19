@@ -49,6 +49,10 @@ MUSETALK_DIR = Path(os.environ.get("MUSETALK_DIR", "/workspace/MuseTalk"))
 # ---------------------------------------------------------------------------
 _models: dict[str, Any] = {}
 _models_available: Optional[bool] = None   # None = not yet probed
+
+# Haarcascade face detector — loaded once, CPU-only, no extra deps
+_face_cascade: Optional[Any] = None
+_face_cascade_loaded: bool = False
 _models_load_lock = threading.Lock()       # prevent concurrent load attempts
 _preprocess_available: Optional[bool] = None
 _preprocess_warned: bool = False
@@ -85,6 +89,110 @@ class AvatarPrep:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _get_face_cascade():
+    """Lazy-load OpenCV Haarcascade face detector (CPU-only)."""
+    global _face_cascade, _face_cascade_loaded
+    if _face_cascade_loaded:
+        return _face_cascade
+    try:
+        _face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        _face_cascade_loaded = True
+        logger.info("OpenCV Haarcascade face detector loaded")
+    except Exception as exc:
+        logger.warning("Could not load Haarcascade: %s", exc)
+        _face_cascade = None
+        _face_cascade_loaded = True
+    return _face_cascade
+
+
+def _detect_lip_bbox_opencv(
+    frame_bgr: np.ndarray,
+) -> tuple[int, int, int, int] | None:
+    """Use OpenCV Haarcascade to get a face bbox, then derive a tight lip ROI.
+
+    Returns (x1, y1, x2, y2) clipped to frame bounds, or None.
+    """
+    cascade = _get_face_cascade()
+    if cascade is None or cascade.empty():
+        return None
+    h, w = frame_bgr.shape[:2]
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
+    faces = cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60)
+    )
+    if not len(faces):
+        # Try more permissive params
+        faces = cascade.detectMultiScale(
+            gray, scaleFactor=1.05, minNeighbors=2, minSize=(40, 40)
+        )
+    if not len(faces):
+        return None
+    # Pick the largest detected face
+    faces_sorted = sorted(faces.tolist(), key=lambda f: f[2] * f[3], reverse=True)
+    fx, fy, fw, fh = faces_sorted[0]
+    # Lip region: horizontal center 70% of face width, vertical 62–84% of face height
+    # (in a frontal face: mouth sits at ~65-82% of the face bounding-box height)
+    pad_x = int(fw * 0.15)
+    x1 = max(0, fx + pad_x)
+    x2 = min(w, fx + fw - pad_x)
+    y1 = max(0, fy + int(fh * 0.62))
+    y2 = min(h, fy + int(fh * 0.84))
+    if x2 - x1 < 32 or y2 - y1 < 16:
+        return None
+    logger.debug("OpenCV lip bbox: (%d,%d,%d,%d) from face (%d,%d,%d,%d)", x1, y1, x2, y2, fx, fy, fw, fh)
+    return (x1, y1, x2, y2)
+
+
+def _make_lip_alpha_mask(
+    crop_h: int, crop_w: int,
+) -> np.ndarray:
+    """Create a float32 [0,1] elliptical mask centred on the upper half of the
+    crop (i.e. actual lips, NOT the chin below).
+
+    The mask is Gaussian-blurred so blending edges are smooth but narrow,
+    which eliminates the wide foggy/dissolving halo.
+    """
+    mask = np.zeros((crop_h, crop_w), dtype=np.float32)
+    # Centre the ellipse at 40% of the crop height so it sits on the lips,
+    # not on the chin (which is the lower portion of the bbox).
+    cy = int(crop_h * 0.38)
+    cx = int(crop_w * 0.50)
+    # Ellipse radii: cover 85% of width, 48% of height (tighter vertically)
+    rx = int(crop_w * 0.42)
+    ry = int(crop_h * 0.32)
+    cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
+    # Soft feather — kernel=11 gives ~5px blend zone; keeps it tight
+    mask = cv2.GaussianBlur(mask, (11, 11), 0)
+    return mask
+
+
+def _fallback_blend(
+    original: np.ndarray,
+    generated_crop: np.ndarray,
+    bbox: tuple[int, int, int, int],
+) -> np.ndarray:
+    """Blend a generated mouth crop onto the original frame using a custom
+    elliptical lip mask — bypasses get_image_prepare_material/FaceParsing
+    entirely for the fallback path, which avoids the dissolve artefact."""
+    out = original.copy()
+    x1, y1, x2, y2 = bbox
+    bh, bw = y2 - y1, x2 - x1
+    if bh <= 0 or bw <= 0:
+        return out
+    roi_gen = cv2.resize(generated_crop.astype(np.uint8), (bw, bh),
+                         interpolation=cv2.INTER_LANCZOS4)
+    alpha = _make_lip_alpha_mask(bh, bw)                # (bh, bw) float32
+    alpha3 = np.stack([alpha, alpha, alpha], axis=-1)   # broadcast over RGB
+    src = original[y1:y2, x1:x2].astype(np.float32)
+    gen = roi_gen.astype(np.float32)
+    blended = (gen * alpha3 + src * (1.0 - alpha3)).clip(0, 255).astype(np.uint8)
+    out[y1:y2, x1:x2] = blended
+    return out
+
 
 def _load_models() -> bool:
     """Try to load MuseTalk models once.  Caches success/failure in
@@ -261,13 +369,28 @@ def prepare_avatar(
             used_fallback_bbox = True
             frame = source_frame_bgr
             h, w = frame.shape[:2]
-            # Fallback ROI: lips-focused region (avoid chin/neck dissolve artifacts).
-            x1 = max(0, int(w * 0.32))
-            y1 = max(0, int(h * 0.44))
-            x2 = min(w, int(w * 0.68))
-            y2 = min(h, int(h * 0.78))
-            if x2 <= x1 or y2 <= y1:
-                x1, y1, x2, y2 = 0, 0, w, h
+
+            # ── Try OpenCV face detection first (CPU, no GPU) ──────────────
+            opencv_lip_bbox = _detect_lip_bbox_opencv(frame)
+            if opencv_lip_bbox is not None:
+                x1, y1, x2, y2 = opencv_lip_bbox
+                logger.info(
+                    "Fallback: OpenCV lip bbox detected: (%d,%d,%d,%d)",
+                    x1, y1, x2, y2,
+                )
+            else:
+                # Last-resort proportional guess: stay well above chin.
+                # y: 46–64% of height (lips only, NOT chin/neck)
+                x1 = max(0, int(w * 0.33))
+                y1 = max(0, int(h * 0.46))
+                x2 = min(w, int(w * 0.67))
+                y2 = min(h, int(h * 0.64))
+                if x2 <= x1 or y2 <= y1:
+                    x1, y1, x2, y2 = 0, 0, w, h
+                logger.info(
+                    "Fallback: proportional lip bbox: (%d,%d,%d,%d)",
+                    x1, y1, x2, y2,
+                )
             coord_list = [(x1, y1, x2, y2)]
             frame_list = [frame]
 
@@ -298,17 +421,23 @@ def prepare_avatar(
         mask_coords_list_cycle: list = []
         for i, frame in enumerate(frame_list_cycle):
             x1, y1, x2, y2 = coord_list_cycle[i]
-            mask_mode = "mouth" if used_fallback_bbox else "jaw"
-            try:
-                mask, crop_box = get_image_prepare_material(
-                    frame, [x1, y1, x2, y2], fp=fp, mode=mask_mode
-                )
-            except Exception:
-                mask, crop_box = get_image_prepare_material(
-                    frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
-                )
-            mask_list_cycle.append(mask)
-            mask_coords_list_cycle.append(crop_box)
+            if used_fallback_bbox:
+                # Skip face-parser masking — build our own elliptical lip mask
+                # so we avoid the broad dissolve that face-parser produces when
+                # the bbox does not come from proper DWPose landmarks.
+                mask_list_cycle.append(None)   # sentinel: use _fallback_blend
+                mask_coords_list_cycle.append(None)
+            else:
+                try:
+                    mask, crop_box = get_image_prepare_material(
+                        frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
+                    )
+                except Exception:
+                    mask, crop_box = get_image_prepare_material(
+                        frame, [x1, y1, x2, y2], fp=fp, mode="mouth"
+                    )
+                mask_list_cycle.append(mask)
+                mask_coords_list_cycle.append(crop_box)
 
         logger.info(
             "MuseTalk avatar '%s' prepared: %d cycle frames",
@@ -446,7 +575,11 @@ def synthesize(
                 continue
             mask = prep.mask_list_cycle[i % n_cycle]
             mcb  = prep.mask_coords_list_cycle[i % n_cycle]
-            combined.append(get_image_blending(ori, res_frame, bbox, mask, mcb))
+            if mask is None:
+                # Fallback path — use our custom elliptical lip mask/blender
+                combined.append(_fallback_blend(ori, res_frame, bbox))
+            else:
+                combined.append(get_image_blending(ori, res_frame, bbox, mask, mcb))
 
         logger.info(
             "MuseTalk synthesized %d frames in %.2fs",
