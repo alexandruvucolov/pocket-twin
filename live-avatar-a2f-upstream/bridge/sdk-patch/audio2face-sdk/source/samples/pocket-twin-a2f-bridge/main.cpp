@@ -325,12 +325,12 @@ int main(int argc, char** argv) {
     auto callback = [](void* userdata, const nva2f::IGeometryExecutor::Results& results) {
       auto& data = *static_cast<CallbackData*>(userdata);
       data.frameCount += 1;
-      data.timestamps.push_back(static_cast<long long>(results.timeStampCurrentFrame));
-      data.nextTimestamps.push_back(static_cast<long long>(results.timeStampNextFrame));
+      data.timestamps.push_back(static_cast<long long>(results.timeStampCurrentFrame * 1000.0));
+      data.nextTimestamps.push_back(static_cast<long long>(results.timeStampNextFrame * 1000.0));
       auto jawTransform = CopyDeviceTensorToHost(results.jawTransform);
       data.frames.push_back(FrameMotion{
-        static_cast<long long>(results.timeStampCurrentFrame),
-        static_cast<long long>(results.timeStampNextFrame),
+        static_cast<long long>(results.timeStampCurrentFrame * 1000.0),
+        static_cast<long long>(results.timeStampNextFrame * 1000.0),
         std::move(jawTransform),
         0.0f
       });

@@ -299,13 +299,10 @@ class PlaceholderTrack(VideoStreamTrack):
             return False
 
         raw_timeline: list[tuple[float, float]] = []
-        for frame in frames:
+        for i, frame in enumerate(frames):
             if not isinstance(frame, dict):
                 continue
-            time_ms = frame.get("timeMs")
-            if not isinstance(time_ms, (int, float)):
-                continue
-
+            
             jaw_transform = frame.get("jawTransform")
             jaw_values = (
                 [float(value) for value in jaw_transform]
@@ -320,7 +317,8 @@ class PlaceholderTrack(VideoStreamTrack):
                     continue
                 raw_open = float(mouth_open)
 
-            raw_timeline.append((max(float(time_ms), 0.0) / 1000.0, raw_open))
+            # Audio2Face bridge operates at a fixed 60 FPS.
+            raw_timeline.append((i / 60.0, raw_open))
 
         if not raw_timeline:
             return False
