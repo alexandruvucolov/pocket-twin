@@ -540,11 +540,13 @@ export default function ChatScreen() {
       );
     } catch (err) {
       await disconnectLiveStream();
-      const msg = err instanceof Error ? err.message : String(err);
-      Alert.alert(
-        "Live stream failed",
-        `${msg}\n\nSet EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL to your signaling backend and make sure the Runpod live service is online.`,
-      );
+      const raw = err instanceof Error ? err.message : String(err);
+      // Cap the message so a long server error body never fills the screen.
+      const msg = raw.length > 200 ? `${raw.slice(0, 200)}\u2026` : raw;
+      const hint = msg.includes("502") || msg.includes("503")
+        ? "The backend pod may be starting up or unreachable. Try again in a few seconds."
+        : "Make sure EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL points to your RunPod backend and the service is online.";
+      Alert.alert("Live session failed", `${msg}\n\n${hint}`);
     } finally {
       setIsLiveConnecting(false);
     }

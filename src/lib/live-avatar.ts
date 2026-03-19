@@ -57,7 +57,18 @@ function getRequiredBaseUrl() {
 async function parseJson<T>(res: Response, errorPrefix: string): Promise<T> {
   const body = await res.text();
   if (!res.ok) {
-    throw new Error(`${errorPrefix} (${res.status}): ${body}`);
+    // Nginx/proxy error pages return HTML — strip it down to a short summary
+    // so it doesn't flood an Alert popup on the phone.
+    const trimmed = body.trimStart();
+    let detail: string;
+    if (trimmed.startsWith("<")) {
+      detail = `server returned an HTML error page (proxy/gateway error)`;
+    } else if (trimmed.length > 300) {
+      detail = `${trimmed.slice(0, 300)}\u2026`;
+    } else {
+      detail = trimmed || "(empty response)";
+    }
+    throw new Error(`${errorPrefix} (${res.status}): ${detail}`);
   }
 
   try {
