@@ -53,6 +53,7 @@ _models_load_lock = threading.Lock()       # prevent concurrent load attempts
 _preprocess_available: Optional[bool] = None
 _preprocess_warned: bool = False
 _last_synthesize_reason: str = ""
+_whisper_dim_warned: bool = False
 
 # musetalk sub-modules that may be left in a broken state if an import fails
 # mid-way; purging them lets the next attempt do a clean import.
@@ -336,7 +337,7 @@ def synthesize(
     Returns a list of BGR ``np.ndarray`` frames ready to stream via WebRTC.
     Returns ``[]`` on any failure so the caller can fall back to TPS warp.
     """
-    global _last_synthesize_reason
+    global _last_synthesize_reason, _whisper_dim_warned
 
     if prep is None:
         _last_synthesize_reason = "avatar prep is None"
@@ -394,6 +395,23 @@ def synthesize(
         res_frame_list: list[np.ndarray] = []
         with torch.no_grad():
             for whisper_batch, latent_batch in gen:
+                # MuseTalk v1.5 expects 384-dim audio features. If a different
+                # Whisper checkpoint is present (e.g. whisper-small = 768),
+                # adapt at runtime so synthesis can proceed.
+                feat_dim = int(whisper_batch.shape[-1])
+                if feat_dim != 384:
+                    if not _whisper_dim_warned:
+                        logger.warning(
+                            "MuseTalk: adapting whisper feature dim %d -> 384",
+                            feat_dim,
+                        )
+                        _whisper_dim_warned = True
+                    if feat_dim > 384:
+                        whisper_batch = whisper_batch[..., :384]
+                    else:
+                        pad = 384 - feat_dim
+                        whisper_batch = torch.nn.functional.pad(whisper_batch, (0, pad))
+
                 audio_feat = pe(whisper_batch.to(device))
                 latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
                 pred = unet.model(

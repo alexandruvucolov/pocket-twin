@@ -75,14 +75,34 @@ PY
 fi
 
 # Ensure Whisper weights exist for `WhisperModel.from_pretrained(models/whisper)`.
-if [[ ! -f "/workspace/MuseTalk/MuseTalk/models/whisper/pytorch_model.bin" ]]; then
-  echo "[start] whisper weights missing; downloading openai/whisper-small..."
+# MuseTalk v1.5 path expects 384-dim features, so we enforce whisper-tiny.
+if ! python3 - <<'PY'
+from pathlib import Path
+import json
+
+cfg = Path('/workspace/MuseTalk/MuseTalk/models/whisper/config.json')
+if not cfg.exists():
+  raise SystemExit(1)
+try:
+  hidden = int(json.loads(cfg.read_text(encoding='utf-8')).get('d_model', 0))
+except Exception:
+  hidden = 0
+raise SystemExit(0 if hidden == 384 else 1)
+PY
+then
+  echo "[start] whisper-tiny (d_model=384) missing/incompatible; downloading openai/whisper-tiny..."
   python3 - <<'PY'
+from pathlib import Path
+import shutil
 from huggingface_hub import snapshot_download
 
+root = Path('/workspace/MuseTalk/MuseTalk/models/whisper')
+if root.exists():
+  shutil.rmtree(root)
+
 snapshot_download(
-    repo_id="openai/whisper-small",
-    local_dir="/workspace/MuseTalk/MuseTalk/models/whisper",
+  repo_id="openai/whisper-tiny",
+  local_dir=str(root),
     local_dir_use_symlinks=False,
 )
 
