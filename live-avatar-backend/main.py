@@ -30,6 +30,7 @@ from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 A2F_CLIENT = Audio2FaceClient()
 
