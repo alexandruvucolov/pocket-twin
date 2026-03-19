@@ -111,7 +111,8 @@ def _get_face_cascade():
 def _detect_lip_bbox_opencv(
     frame_bgr: np.ndarray,
 ) -> tuple[int, int, int, int] | None:
-    """Use OpenCV Haarcascade to get a face bbox, then derive a tight lip ROI.
+    """Use OpenCV Haarcascade to get a face bbox, then derive a lower-face ROI
+    large enough for MuseTalk's UNet (which expects a full-face-scale crop).
 
     Returns (x1, y1, x2, y2) clipped to frame bounds, or None.
     """
@@ -125,48 +126,45 @@ def _detect_lip_bbox_opencv(
         gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60)
     )
     if not len(faces):
-        # Try more permissive params
         faces = cascade.detectMultiScale(
             gray, scaleFactor=1.05, minNeighbors=2, minSize=(40, 40)
         )
     if not len(faces):
         return None
-    # Pick the largest detected face
     faces_sorted = sorted(faces.tolist(), key=lambda f: f[2] * f[3], reverse=True)
     fx, fy, fw, fh = faces_sorted[0]
-    # Lip region: horizontal center 70% of face width, vertical 62–84% of face height
-    # (in a frontal face: mouth sits at ~65-82% of the face bounding-box height)
-    pad_x = int(fw * 0.15)
-    x1 = max(0, fx + pad_x)
-    x2 = min(w, fx + fw - pad_x)
-    y1 = max(0, fy + int(fh * 0.62))
-    y2 = min(h, fy + int(fh * 0.84))
-    if x2 - x1 < 32 or y2 - y1 < 16:
+    # Use the FULL lower face: from ~45% of face height down, full width.
+    # MuseTalk UNet was trained on full-face 256x256 crops so we need a large
+    # region — not just lips — for the model to work correctly.
+    x1 = max(0, fx)
+    x2 = min(w, fx + fw)
+    y1 = max(0, fy + int(fh * 0.45))  # from mid-nose down
+    y2 = min(h, fy + fh + int(fh * 0.05))  # slightly below chin
+    if x2 - x1 < 64 or y2 - y1 < 32:
         return None
-    logger.debug("OpenCV lip bbox: (%d,%d,%d,%d) from face (%d,%d,%d,%d)", x1, y1, x2, y2, fx, fy, fw, fh)
+    logger.debug("OpenCV lower-face bbox: (%d,%d,%d,%d) from face (%d,%d,%d,%d)", x1, y1, x2, y2, fx, fy, fw, fh)
     return (x1, y1, x2, y2)
 
 
 def _make_lip_alpha_mask(
     crop_h: int, crop_w: int,
 ) -> np.ndarray:
-    """Create a float32 [0,1] elliptical mask centred on the upper half of the
-    crop (i.e. actual lips, NOT the chin below).
+    """Create a float32 [0,1] elliptical mask covering the mouth+chin area of
+    a lower-face crop.  The crop spans from mid-nose to chin so the mouth
+    sits at roughly 30-70% of crop height.
 
-    The mask is Gaussian-blurred so blending edges are smooth but narrow,
-    which eliminates the wide foggy/dissolving halo.
+    The mask is Gaussian-blurred for smooth blending edges.
     """
     mask = np.zeros((crop_h, crop_w), dtype=np.float32)
-    # Centre the ellipse at 40% of the crop height so it sits on the lips,
-    # not on the chin (which is the lower portion of the bbox).
-    cy = int(crop_h * 0.38)
+    # Centre ellipse at ~50% height (middle of lower face = mouth area)
+    cy = int(crop_h * 0.50)
     cx = int(crop_w * 0.50)
-    # Ellipse radii: cover 85% of width, 48% of height (tighter vertically)
-    rx = int(crop_w * 0.42)
-    ry = int(crop_h * 0.32)
+    # Wide ellipse: covers 90% of width, 65% of height
+    rx = int(crop_w * 0.45)
+    ry = int(crop_h * 0.38)
     cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    # Soft feather — kernel=11 gives ~5px blend zone; keeps it tight
-    mask = cv2.GaussianBlur(mask, (11, 11), 0)
+    # Soft feather — 21px gives ~10px blend zone
+    mask = cv2.GaussianBlur(mask, (21, 21), 0)
     return mask
 
 
@@ -375,20 +373,19 @@ def prepare_avatar(
             if opencv_lip_bbox is not None:
                 x1, y1, x2, y2 = opencv_lip_bbox
                 logger.info(
-                    "Fallback: OpenCV lip bbox detected: (%d,%d,%d,%d)",
-                    x1, y1, x2, y2,
+                    "Fallback: OpenCV lower-face bbox detected: (%d,%d,%d,%d) size=%dx%d",
+                    x1, y1, x2, y2, x2-x1, y2-y1,
                 )
             else:
-                # Last-resort proportional guess: stay well above chin.
-                # y: 46–64% of height (lips only, NOT chin/neck)
-                x1 = max(0, int(w * 0.33))
-                y1 = max(0, int(h * 0.46))
-                x2 = min(w, int(w * 0.67))
-                y2 = min(h, int(h * 0.64))
+                # Last-resort: lower half of image, full width
+                x1 = max(0, int(w * 0.15))
+                y1 = max(0, int(h * 0.40))
+                x2 = min(w, int(w * 0.85))
+                y2 = min(h, int(h * 0.90))
                 if x2 <= x1 or y2 <= y1:
                     x1, y1, x2, y2 = 0, 0, w, h
                 logger.info(
-                    "Fallback: proportional lip bbox: (%d,%d,%d,%d)",
+                    "Fallback: proportional lower-face bbox: (%d,%d,%d,%d)",
                     x1, y1, x2, y2,
                 )
             coord_list = [(x1, y1, x2, y2)]
