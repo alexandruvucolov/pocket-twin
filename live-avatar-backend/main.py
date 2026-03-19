@@ -589,6 +589,8 @@ async def _musetalk_speak(
     import musetalk_infer  # noqa: PLC0415
 
     try:
+        logger.info("MuseTalk: speak pipeline started")
+
         # ── Step 1: Ensure avatar preparation is done (cached after first call) ──
         if track._musetalk_prep is None:
             logger.info("MuseTalk: running avatar preparation for track %s", id(track))
@@ -601,6 +603,7 @@ async def _musetalk_speak(
 
         if track._musetalk_prep is None:
             # MuseTalk unavailable or no face found — TPS warp continues
+            logger.warning("MuseTalk: avatar preparation returned None; using TPS fallback")
             return
 
         # ── Step 2: Fetch TTS audio from ElevenLabs ──────────────────────────
@@ -619,6 +622,7 @@ async def _musetalk_speak(
             )
             resp.raise_for_status()
             audio_bytes = resp.content
+            logger.info("MuseTalk: ElevenLabs audio fetched (%d bytes)", len(audio_bytes))
 
         # ── Step 3: Save to temp file & synthesise frames ─────────────────────
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp") as f:
@@ -640,11 +644,23 @@ async def _musetalk_speak(
 
         if frames:
             track.set_musetalk_frames(frames, fps=25)
+            logger.info("MuseTalk: applied %d synthesized frames", len(frames))
         else:
             logger.warning("MuseTalk returned no frames for session; TPS warp active")
 
+    except httpx.HTTPStatusError as exc:
+        body = ""
+        try:
+            body = exc.response.text[:240]
+        except Exception:
+            body = ""
+        logger.warning(
+            "MuseTalk: ElevenLabs request failed (%s): %s",
+            exc.response.status_code if exc.response is not None else "unknown",
+            body or str(exc),
+        )
     except Exception as exc:
-        logger.warning("_musetalk_speak failed: %s", exc, exc_info=True)
+        logger.warning("MuseTalk: speak pipeline failed: %s", exc)
 
 
 @app.delete("/api/live-avatar/sessions/{session_id}")
