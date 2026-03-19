@@ -220,7 +220,6 @@ def prepare_avatar(
             sys.path.insert(0, musetalk_str)
         os.chdir(MUSETALK_DIR)
 
-        from musetalk.utils.preprocessing import get_landmark_and_bbox   # noqa: PLC0415
         from musetalk.utils.blending import get_image_prepare_material    # noqa: PLC0415
 
         avatar_dir = Path(work_dir) / avatar_id
@@ -233,7 +232,25 @@ def prepare_avatar(
         frame_path = str(full_imgs_path / "00000000.png")
         cv2.imwrite(frame_path, source_frame_bgr)
 
-        coord_list, frame_list = get_landmark_and_bbox([frame_path], bbox_shift=0)
+        try:
+            from musetalk.utils.preprocessing import get_landmark_and_bbox   # noqa: PLC0415
+            coord_list, frame_list = get_landmark_and_bbox([frame_path], bbox_shift=0)
+        except Exception as exc:
+            logger.warning(
+                "MuseTalk preprocessing unavailable (%s); using fallback bbox path.",
+                exc,
+            )
+            frame = source_frame_bgr
+            h, w = frame.shape[:2]
+            # Fallback ROI: central lower-face-biased box (works without DWPose).
+            x1 = max(0, int(w * 0.20))
+            y1 = max(0, int(h * 0.18))
+            x2 = min(w, int(w * 0.80))
+            y2 = min(h, int(h * 0.92))
+            if x2 <= x1 or y2 <= y1:
+                x1, y1, x2, y2 = 0, 0, w, h
+            coord_list = [(x1, y1, x2, y2)]
+            frame_list = [frame]
 
         coord_placeholder = (0.0, 0.0, 0.0, 0.0)
         vae = _models["vae"]
