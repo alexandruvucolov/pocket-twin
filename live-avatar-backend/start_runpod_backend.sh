@@ -25,6 +25,28 @@ python3 -m pip install -q --upgrade \
   "diffusers==0.30.3" \
   "accelerate==0.34.2"
 
+# Ensure SD-VAE weights exist for MuseTalk (models/sd-vae/config.json + bin).
+if [[ ! -f "$SCRIPT_DIR/../MuseTalk/MuseTalk/models/sd-vae/config.json" && ! -f "/workspace/MuseTalk/MuseTalk/models/sd-vae/config.json" && ! -f "/workspace/MuseTalk/MuseTalk/models/sd-vae-ft-mse/config.json" ]]; then
+  echo "[start] sd-vae weights missing; downloading stabilityai/sd-vae-ft-mse..."
+  python3 - <<'PY'
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+
+root = Path("/workspace/MuseTalk/MuseTalk/models/sd-vae")
+root.mkdir(parents=True, exist_ok=True)
+
+for filename in ("config.json", "diffusion_pytorch_model.bin"):
+    src = hf_hub_download(
+        repo_id="stabilityai/sd-vae-ft-mse",
+        filename=filename,
+    )
+    dst = root / filename
+    dst.write_bytes(Path(src).read_bytes())
+
+print(f"Downloaded SD-VAE weights to {root}")
+PY
+fi
+
 # Validate torchvision custom ops (nms). If missing, install the official
 # matching PyTorch/cu124 wheels into SYSTEM Python once.
 if ! python3 - <<'PY'
