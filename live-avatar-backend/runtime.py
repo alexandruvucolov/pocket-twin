@@ -346,7 +346,10 @@ class PlaceholderTrack(VideoStreamTrack):
             return False
 
         self._a2f_frames = timeline
-        self._a2f_started_at = time.monotonic()
+        # Delay animation start to match when TTS audio actually begins playing
+        # on the device. The motion file is loaded during the API call; TTS audio
+        # reaches the device ~0.9 s later (ElevenLabs encode + download + buffer).
+        self._a2f_started_at = time.monotonic() + 0.9
         self._a2f_duration_seconds = timeline[-1][0]
         self._speech_until = self._a2f_started_at + max(self._a2f_duration_seconds, 0.25)
         return True
@@ -513,8 +516,8 @@ class PlaceholderTrack(VideoStreamTrack):
         # Fix unnatural stretch: force lower lip to do 90% of the movement (mimic natural jaw drop)
         upper_shift = max_shift * 0.10
         lower_shift = max_shift * 0.90
-        corner_dy   = lower_shift * 0.12
-        corner_dx   = lip_width   * 0.12   # corners spread outward as mouth opens
+        corner_dy   = lower_shift * 0.04
+        corner_dx   = 0.0   # no lateral spread — was causing visible pulsation
 
         # near-mouth boundary ring: zero-displacement anchors just outside
         # the lip edge — they clamp the TPS field so it decays within ~1 lip-

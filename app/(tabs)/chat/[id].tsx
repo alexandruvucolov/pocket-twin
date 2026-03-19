@@ -110,6 +110,8 @@ export default function ChatScreen() {
   const lastAudioTimeRef = useRef(0);
   const recordingStartRef = useRef(0);
   const lastRecordingFingerprintRef = useRef<string | null>(null);
+  // Stores the last text spoken by the avatar; used to detect mic echo of TTS
+  const lastSpokenTextRef = useRef<string>("");
   const audioRecorderRef = useRef<InstanceType<
     typeof AudioModule.AudioRecorder
   > | null>(null);
@@ -263,26 +265,30 @@ export default function ChatScreen() {
   );
 
   const playLiveBackendAudio = useCallback(
-    (text: string) => {
+    (text: string): Promise<void> => {
       setIsSpeaking(true);
-      textToSpeech(text)
-        .then((fileUri) => {
-          ttsPlayer.replace({ uri: fileUri });
-          ttsPlayer.play();
-          const sub = ttsPlayer.addListener(
-            "playbackStatusUpdate",
-            (status) => {
-              if (status.didJustFinish) {
-                setIsSpeaking(false);
-                sub.remove();
-              }
-            },
-          );
-        })
-        .catch((err) => {
-          console.warn("[TTS] live backend audio error:", err);
-          setIsSpeaking(false);
-        });
+      return new Promise<void>((resolve) => {
+        textToSpeech(text)
+          .then((fileUri) => {
+            ttsPlayer.replace({ uri: fileUri });
+            ttsPlayer.play();
+            const sub = ttsPlayer.addListener(
+              "playbackStatusUpdate",
+              (status) => {
+                if (status.didJustFinish) {
+                  setIsSpeaking(false);
+                  sub.remove();
+                  resolve();
+                }
+              },
+            );
+          })
+          .catch((err) => {
+            console.warn("[TTS] live backend audio error:", err);
+            setIsSpeaking(false);
+            resolve();
+          });
+      });
     },
     [ttsPlayer],
   );
@@ -294,13 +300,14 @@ export default function ChatScreen() {
         throw new Error("Live stream is not connected.");
       }
 
+      lastSpokenTextRef.current = text;
       try {
         await Promise.all([
           speakLiveAvatarText({
             sessionId: session.sessionId,
             text,
           }),
-          Promise.resolve(playLiveBackendAudio(text)),
+          playLiveBackendAudio(text),
         ]);
       } catch (err) {
         // If the backend session is gone (e.g. pod was restarted), clean up the
@@ -1010,6 +1017,21 @@ export default function ChatScreen() {
         return;
       }
 
+      // Echo guard: reject transcripts that closely match the last thing the
+      // avatar said. This catches the mic picking up TTS speaker audio.
+      if (lastSpokenTextRef.current) {
+        const t = transcript.toLowerCase().trim();
+        const s = lastSpokenTextRef.current.toLowerCase().trim();
+        const prefix = s.slice(0, Math.min(35, s.length));
+        if (prefix.length >= 15 && t.includes(prefix)) {
+          console.warn(
+            "[Voice] echo guard: transcript matches last spoken reply – discarding",
+          );
+          shouldRestartListening = isVoiceSessionActive(sessionId);
+          return;
+        }
+      }
+
       setLastVoiceTranscript(transcript);
 
       if (coinsRef.current <= 0) {
@@ -1073,7 +1095,13 @@ export default function ChatScreen() {
       }
       isProcessingRecordingRef.current = false;
       if (shouldRestartListening && isVoiceSessionActive(sessionId)) {
-        void startVoiceListening(sessionId);
+        // Wait for speaker audio to fully dissipate before reopening the mic.
+        // Without this delay the mic picks up the tail of the TTS playback and
+        // sends it back as a new user message, creating a voice feedback loop.
+        await new Promise((r) => setTimeout(r, 900));
+        if (isVoiceSessionActive(sessionId)) {
+          void startVoiceListening(sessionId);
+        }
       }
     }
   };
@@ -1120,6 +1148,7 @@ export default function ChatScreen() {
 
   /** Returns a Promise that resolves when TTS playback finishes (or fails). */
   const speakReplyAndWait = (text: string): Promise<void> => {
+    lastSpokenTextRef.current = text;
     return new Promise((resolve) => {
       setIsSpeaking(true);
       textToSpeech(text)

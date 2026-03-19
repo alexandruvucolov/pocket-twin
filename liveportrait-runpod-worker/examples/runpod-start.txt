@@ -1,0 +1,17 @@
+# Pocket Twin Runpod quick start
+
+# 1) install worker deps
+cd /workspace/pocket-twin/liveportrait-runpod-worker
+pip install -r requirements.txt
+
+# 2) export worker env
+set -a
+source /workspace/pocket-twin/liveportrait-runpod-worker/examples/pocket-twin-runpod.env.example
+set +a
+
+# 3) start or package your Runpod Serverless worker with:
+#    handler: liveportrait-runpod-worker/handler.py
+
+# 4) backend env file path
+#    /workspace/pocket-twin/live-avatar-backend/.env
+#    start from: /workspace/pocket-twin/live-avatar-backend/.env.runpod.example
