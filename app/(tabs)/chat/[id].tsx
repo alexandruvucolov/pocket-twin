@@ -294,15 +294,31 @@ export default function ChatScreen() {
         throw new Error("Live stream is not connected.");
       }
 
-      await Promise.all([
-        speakLiveAvatarText({
-          sessionId: session.sessionId,
-          text,
-        }),
-        Promise.resolve(playLiveBackendAudio(text)),
-      ]);
+      try {
+        await Promise.all([
+          speakLiveAvatarText({
+            sessionId: session.sessionId,
+            text,
+          }),
+          Promise.resolve(playLiveBackendAudio(text)),
+        ]);
+      } catch (err) {
+        // If the backend session is gone (e.g. pod was restarted), clean up the
+        // stale session so the UI resets to "Offline" and the user can reconnect.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          msg.includes("404") ||
+          msg.toLowerCase().includes("session not found")
+        ) {
+          console.warn(
+            "[Avatar] Session gone on backend – disconnecting stale live session.",
+          );
+          void disconnectLiveStream();
+        }
+        throw err;
+      }
     },
-    [playLiveBackendAudio],
+    [disconnectLiveStream, playLiveBackendAudio],
   );
 
   const startLiveStream = useCallback(async () => {
