@@ -12,10 +12,13 @@ class Audio2FaceClient:
         self.base_url = os.getenv("LIVE_AVATAR_A2F_SERVICE_URL", "").strip().rstrip("/")
         self.api_key = os.getenv("LIVE_AVATAR_A2F_API_KEY", "").strip()
         self.avatar_id = os.getenv("LIVE_AVATAR_A2F_AVATAR_ID", "default-avatar").strip()
+        # Set to True after the first connection-refused error so we stop
+        # hammering a non-existent service on every speak/session call.
+        self._unreachable = False
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.base_url)
+        return bool(self.base_url) and not self._unreachable
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -70,4 +73,6 @@ class Audio2FaceClient:
             detail = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"Audio2Face service error ({exc.code}): {detail}") from exc
         except URLError as exc:
+            # Mark service as unreachable so subsequent calls are silently skipped.
+            self._unreachable = True
             raise RuntimeError(f"Audio2Face service unavailable: {exc}") from exc

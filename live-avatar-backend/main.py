@@ -480,8 +480,8 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
                 session_id,
                 body.model_dump(),
             )
-        except Exception:
-            logger.exception("Audio2Face session bootstrap failed for %s", session_id)
+        except Exception as exc:
+            logger.warning("Audio2Face session bootstrap failed for %s: %s", session_id, exc)
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
@@ -553,8 +553,8 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
                         loaded = await asyncio.to_thread(load_motion, output_dir)
                         if loaded:
                             logger.info("Loaded A2F motion for %s from %s", session_id, output_dir)
-        except Exception:
-            logger.exception("Audio2Face speak sync failed for %s", session_id)
+        except Exception as exc:
+            logger.warning("Audio2Face speak sync failed for %s: %s", session_id, exc)
 
     # Launch MuseTalk synthesis in background (non-blocking).
     # If ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID are not set, or MuseTalk is
@@ -648,8 +648,8 @@ async def delete_session(session_id: str) -> dict[str, bool | str]:
     if A2F_CLIENT.is_configured:
         try:
             await asyncio.to_thread(A2F_CLIENT.close_session, session_id)
-        except Exception:
-            logger.exception("Audio2Face close sync failed for %s", session_id)
+        except Exception as exc:
+            logger.warning("Audio2Face close sync failed for %s: %s", session_id, exc)
 
     await close_session(session_id)
     return {"ok": True, "sessionId": session_id}
