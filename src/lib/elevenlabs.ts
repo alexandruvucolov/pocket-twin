@@ -9,6 +9,31 @@ const DEFAULT_VOICE_ID = (
   process.env.EXPO_PUBLIC_ELEVENLABS_VOICE_ID ?? "pNInz6obpgDQGcFmaJgB"
 ).trim();
 
+function bytesToBase64(bytes: Uint8Array): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const hasB1 = i + 1 < bytes.length;
+    const hasB2 = i + 2 < bytes.length;
+    const b1 = hasB1 ? bytes[i + 1] : 0;
+    const b2 = hasB2 ? bytes[i + 2] : 0;
+
+    const enc1 = b0 >> 2;
+    const enc2 = ((b0 & 0x03) << 4) | (b1 >> 4);
+    const enc3 = ((b1 & 0x0f) << 2) | (b2 >> 6);
+    const enc4 = b2 & 0x3f;
+
+    out += chars[enc1];
+    out += chars[enc2];
+    out += hasB1 ? chars[enc3] : "=";
+    out += hasB2 ? chars[enc4] : "=";
+  }
+
+  return out;
+}
+
 function getApiKey(): string {
   const key = (process.env.EXPO_PUBLIC_ELEVENLABS_API_KEY ?? "").trim();
   if (!key || key === "your_elevenlabs_api_key_here") {
@@ -55,11 +80,7 @@ export async function textToSpeech(
 
   const arrayBuffer = await res.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  const base64 = btoa(binary);
+  const base64 = bytesToBase64(bytes);
 
   const fileUri = (FileSystem.cacheDirectory ?? "") + `tts_${Date.now()}.mp3`;
   await FileSystem.writeAsStringAsync(fileUri, base64, {
