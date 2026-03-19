@@ -651,7 +651,18 @@ async def _musetalk_speak(
             track.set_musetalk_frames(frames, fps=25)
             logger.info("MuseTalk: applied %d synthesized frames", len(frames))
         else:
-            logger.warning("MuseTalk returned no frames for session; TPS warp active")
+            reason = ""
+            try:
+                reason = str(musetalk_infer.get_last_synthesize_reason() or "")
+            except Exception:
+                reason = ""
+            if reason:
+                logger.warning(
+                    "MuseTalk returned no frames for session (%s); TPS warp active",
+                    reason,
+                )
+            else:
+                logger.warning("MuseTalk returned no frames for session; TPS warp active")
 
     except httpx.HTTPStatusError as exc:
         body = ""

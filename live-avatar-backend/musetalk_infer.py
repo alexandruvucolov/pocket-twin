@@ -52,6 +52,7 @@ _models_available: Optional[bool] = None   # None = not yet probed
 _models_load_lock = threading.Lock()       # prevent concurrent load attempts
 _preprocess_available: Optional[bool] = None
 _preprocess_warned: bool = False
+_last_synthesize_reason: str = ""
 
 # musetalk sub-modules that may be left in a broken state if an import fails
 # mid-way; purging them lets the next attempt do a clean import.
@@ -335,7 +336,13 @@ def synthesize(
     Returns a list of BGR ``np.ndarray`` frames ready to stream via WebRTC.
     Returns ``[]`` on any failure so the caller can fall back to TPS warp.
     """
-    if prep is None or not _load_models():
+    global _last_synthesize_reason
+
+    if prep is None:
+        _last_synthesize_reason = "avatar prep is None"
+        return []
+    if not _load_models():
+        _last_synthesize_reason = "models unavailable"
         return []
 
     musetalk_str = str(MUSETALK_DIR)
@@ -373,6 +380,10 @@ def synthesize(
             audio_padding_length_right=2,
         )
         video_num = len(whisper_chunks)
+        if video_num == 0:
+            _last_synthesize_reason = "no whisper chunks extracted from audio"
+            logger.warning("MuseTalk synthesize: no whisper chunks extracted from audio")
+            return []
 
         # ── 2. UNet inference (batch) ──────────────────────────────────────
         gen = datagen(
@@ -414,11 +425,20 @@ def synthesize(
             "MuseTalk synthesized %d frames in %.2fs",
             len(combined), time.monotonic() - t0,
         )
+        if not combined:
+            _last_synthesize_reason = "pipeline completed but produced 0 blended frames"
+        else:
+            _last_synthesize_reason = ""
         return combined
 
     except Exception as exc:
+        _last_synthesize_reason = str(exc)
         logger.warning("MuseTalk synthesize failed: %s", exc, exc_info=True)
         return []
 
     finally:
         os.chdir(orig_cwd)
+
+
+def get_last_synthesize_reason() -> str:
+    return _last_synthesize_reason
