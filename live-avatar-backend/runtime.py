@@ -513,8 +513,8 @@ class PlaceholderTrack(VideoStreamTrack):
         # Fix unnatural stretch: force lower lip to do 90% of the movement (mimic natural jaw drop)
         upper_shift = max_shift * 0.10
         lower_shift = max_shift * 0.90
-        corner_dy   = lower_shift * 0.10
-        corner_dx   = lip_width   * 0.04
+        corner_dy   = lower_shift * 0.12
+        corner_dx   = lip_width   * 0.12   # corners spread outward as mouth opens
 
         # near-mouth boundary ring: zero-displacement anchors just outside
         # the lip edge — they clamp the TPS field so it decays within ~1 lip-
@@ -562,8 +562,8 @@ class PlaceholderTrack(VideoStreamTrack):
             [  0.0,  +lower_shift        ],  # 3
             [  0.0,  +lower_shift * 0.80 ],  # 4
             [  0.0,  +lower_shift * 0.80 ],  # 5
-            [-corner_dx, +corner_dy      ],  # 6
-            [+corner_dx, +corner_dy      ],  # 7
+            [-corner_dx, +corner_dy      ],  # 6 left corner: left + slightly down
+            [+corner_dx, +corner_dy      ],  # 7 right corner: right + slightly down
             # near-mouth ring: all zero
             [0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],
             # face + image-corner anchors: all zero
