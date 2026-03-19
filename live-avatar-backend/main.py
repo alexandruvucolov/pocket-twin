@@ -32,6 +32,15 @@ from schemas import AnswerBody, CreateSessionBody, IceBody, SpeakBody
 load_dotenv()
 logger = logging.getLogger(__name__)
 A2F_CLIENT = Audio2FaceClient()
+
+# MuseTalk / ElevenLabs settings (optional — falls back to TPS warp if absent)
+_ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "").strip()
+_ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+_MUSETALK_ENABLED = bool(_ELEVENLABS_API_KEY and _ELEVENLABS_VOICE_ID)
+if _MUSETALK_ENABLED:
+    logger.info("MuseTalk synthesis enabled (voice=%s)", _ELEVENLABS_VOICE_ID)
+else:
+    logger.info("MuseTalk disabled (set ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID to enable)")
 PUBLIC_RESULTS_DIR = Path(
     os.getenv("LIVE_AVATAR_PUBLIC_RESULTS_DIR", "/workspace/liveportrait-results").strip()
     or "/workspace/liveportrait-results"
@@ -546,7 +555,89 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
         except Exception:
             logger.exception("Audio2Face speak sync failed for %s", session_id)
 
+    # Launch MuseTalk synthesis in background (non-blocking).
+    # If ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID are not set, or MuseTalk is
+    # not installed, this is a no-op and TPS warp continues as before.
+    if _MUSETALK_ENABLED and isinstance(track, PlaceholderTrack) and track.source_frame is not None:
+        asyncio.create_task(
+            _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID)
+        )
+
     return {"ok": True, "sessionId": session_id}
+
+
+async def _musetalk_speak(
+    track: PlaceholderTrack,
+    text: str,
+    api_key: str,
+    voice_id: str,
+) -> None:
+    """Background task: fetch TTS audio from ElevenLabs then run MuseTalk.
+
+    On success, calls ``track.set_musetalk_frames()`` so that the next
+    ``recv()`` calls serve the lip-sync'd frames instead of TPS warp.
+    Silently logs and returns on any failure — the TPS fallback continues.
+    """
+    import httpx  # noqa: PLC0415
+    import musetalk_infer  # noqa: PLC0415
+
+    try:
+        # ── Step 1: Ensure avatar preparation is done (cached after first call) ──
+        if track._musetalk_prep is None:
+            logger.info("MuseTalk: running avatar preparation for track %s", id(track))
+            track._musetalk_prep = await asyncio.to_thread(
+                musetalk_infer.prepare_avatar,
+                track.source_frame,
+                f"avatar_{id(track)}",
+                "/tmp/musetalk_avatars",
+            )
+
+        if track._musetalk_prep is None:
+            # MuseTalk unavailable or no face found — TPS warp continues
+            return
+
+        # ── Step 2: Fetch TTS audio from ElevenLabs ──────────────────────────
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                headers={
+                    "xi-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": text,
+                    "model_id": "eleven_multilingual_v2",
+                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                },
+            )
+            resp.raise_for_status()
+            audio_bytes = resp.content
+
+        # ── Step 3: Save to temp file & synthesise frames ─────────────────────
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp") as f:
+            f.write(audio_bytes)
+            audio_path = f.name
+
+        try:
+            frames = await asyncio.to_thread(
+                musetalk_infer.synthesize,
+                track._musetalk_prep,
+                audio_path,
+                25,
+            )
+        finally:
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+
+        if frames:
+            track.set_musetalk_frames(frames, fps=25)
+        else:
+            logger.warning("MuseTalk returned no frames for session; TPS warp active")
+
+    except Exception as exc:
+        logger.warning("_musetalk_speak failed: %s", exc, exc_info=True)
 
 
 @app.delete("/api/live-avatar/sessions/{session_id}")

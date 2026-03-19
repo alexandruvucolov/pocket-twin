@@ -280,6 +280,21 @@ class PlaceholderTrack(VideoStreamTrack):
         # Blink state --------------------------------------------------------
         self._next_blink_at: float = 0.0   # 0 = not yet initialised
         self._blink_start: float = -1.0    # -1 = not currently blinking
+        # MuseTalk frame queue -----------------------------------------------
+        # When MuseTalk synthesises frames for a reply they are stored here.
+        # recv() serves them instead of TPS warp until the list is exhausted.
+        self._musetalk_frames: list[np.ndarray] = []
+        self._musetalk_frame_start: float = 0.0
+        self._musetalk_fps: int = 25
+        # Per-session MuseTalk avatar preparation cache (set lazily on first speak)
+        self._musetalk_prep = None
+
+    def set_musetalk_frames(self, frames: list, fps: int = 25) -> None:
+        """Store pre-rendered MuseTalk frames to be streamed via recv()."""
+        self._musetalk_fps = fps
+        self._musetalk_frames = frames
+        self._musetalk_frame_start = time.monotonic()
+        logger.info("MuseTalk: queued %d frames at %d fps", len(frames), fps)
 
     def set_text(self, text: str) -> None:
         self.label = (text or "live").strip()[:120]
@@ -871,6 +886,28 @@ class PlaceholderTrack(VideoStreamTrack):
     async def recv(self) -> av.VideoFrame:
         pts, time_base = await self.next_timestamp()
         now = time.monotonic()
+
+        # ── MuseTalk path: serve pre-rendered lip-sync frames ─────────────
+        if self._musetalk_frames:
+            elapsed = max(now - self._musetalk_frame_start, 0.0)
+            idx = min(int(elapsed * self._musetalk_fps), len(self._musetalk_frames) - 1)
+            image = self._musetalk_frames[idx].copy()
+            # Clear the queue once the last frame is reached
+            if idx >= len(self._musetalk_frames) - 1:
+                self._musetalk_frames = []
+                logger.debug("MuseTalk frame queue exhausted")
+            # Still apply blink on top of MuseTalk frames
+            blink = self._blink_amount(now)
+            if blink > 0.01:
+                image = self._apply_blink(image, blink)
+            frame = av.VideoFrame.from_ndarray(
+                cv2.cvtColor(image, cv2.COLOR_BGR2RGB), format="rgb24"
+            )
+            frame.pts = pts
+            frame.time_base = time_base
+            return frame
+
+        # ── TPS / fallback path ───────────────────────────────────────────
         mouth_open = self._current_mouth_open(now)
         image = self._render_avatar(now, mouth_open)
 
