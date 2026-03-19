@@ -453,7 +453,9 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
         logger.exception("Failed to load avatar source image for session %s", session_id)
 
     track: PlaceholderTrack | LoopingVideoTrack
-    if body.sourceImageUrl and _get_runpod_config():
+    # When MuseTalk is enabled it is the visual engine — skip LivePortrait so
+    # the track is always a PlaceholderTrack and _musetalk_speak can run.
+    if body.sourceImageUrl and _get_runpod_config() and not _MUSETALK_ENABLED:
         try:
             liveportrait_video_path = await asyncio.to_thread(
                 _prepare_liveportrait_video,
@@ -472,6 +474,12 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
             track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
     else:
         track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
+    logger.info(
+        "Session %s: track=%s source_frame=%s musetalk_enabled=%s",
+        session_id, type(track).__name__,
+        "yes" if source_frame is not None else "NO",
+        _MUSETALK_ENABLED,
+    )
     pc.addTrack(track)
     SESSIONS[session_id] = (pc, track)
     PENDING_ICE_CANDIDATES[session_id] = []
@@ -571,8 +579,15 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
     # If ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID are not set, or MuseTalk is
     # not installed, this is a no-op and TPS warp continues as before.
     if _MUSETALK_ENABLED and isinstance(track, PlaceholderTrack) and track.source_frame is not None:
+        logger.info("MuseTalk: scheduling speak task for session %s", session_id)
         asyncio.create_task(
             _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID)
+        )
+    elif _MUSETALK_ENABLED:
+        logger.warning(
+            "MuseTalk: speak task NOT scheduled — track=%s source_frame=%s",
+            type(track).__name__,
+            getattr(track, "source_frame", "N/A") is not None,
         )
 
     return {"ok": True, "sessionId": session_id}
