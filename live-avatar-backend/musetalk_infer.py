@@ -50,6 +50,8 @@ MUSETALK_DIR = Path(os.environ.get("MUSETALK_DIR", "/workspace/MuseTalk"))
 _models: dict[str, Any] = {}
 _models_available: Optional[bool] = None   # None = not yet probed
 _models_load_lock = threading.Lock()       # prevent concurrent load attempts
+_preprocess_available: Optional[bool] = None
+_preprocess_warned: bool = False
 
 # musetalk sub-modules that may be left in a broken state if an import fails
 # mid-way; purging them lets the next attempt do a clean import.
@@ -215,6 +217,8 @@ def prepare_avatar(
     musetalk_str = str(MUSETALK_DIR)
     orig_cwd = os.getcwd()
 
+    global _preprocess_available, _preprocess_warned
+
     try:
         if musetalk_str not in sys.path:
             sys.path.insert(0, musetalk_str)
@@ -232,14 +236,24 @@ def prepare_avatar(
         frame_path = str(full_imgs_path / "00000000.png")
         cv2.imwrite(frame_path, source_frame_bgr)
 
-        try:
-            from musetalk.utils.preprocessing import get_landmark_and_bbox   # noqa: PLC0415
-            coord_list, frame_list = get_landmark_and_bbox([frame_path], bbox_shift=0)
-        except Exception as exc:
-            logger.warning(
-                "MuseTalk preprocessing unavailable (%s); using fallback bbox path.",
-                exc,
-            )
+        if _preprocess_available is not False:
+            try:
+                from musetalk.utils.preprocessing import get_landmark_and_bbox   # noqa: PLC0415
+                coord_list, frame_list = get_landmark_and_bbox([frame_path], bbox_shift=0)
+                _preprocess_available = True
+            except Exception as exc:
+                _preprocess_available = False
+                if not _preprocess_warned:
+                    logger.warning(
+                        "MuseTalk preprocessing unavailable (%s); switching to fallback bbox path.",
+                        exc,
+                    )
+                    _preprocess_warned = True
+                coord_list, frame_list = [], []
+        else:
+            coord_list, frame_list = [], []
+
+        if not coord_list or not frame_list:
             frame = source_frame_bgr
             h, w = frame.shape[:2]
             # Fallback ROI: central lower-face-biased box (works without DWPose).
@@ -298,7 +312,7 @@ def prepare_avatar(
         )
 
     except Exception as exc:
-        logger.warning("MuseTalk prepare_avatar failed: %s", exc, exc_info=True)
+        logger.warning("MuseTalk prepare_avatar failed: %s", exc)
         return None
 
     finally:
