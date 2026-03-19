@@ -34,7 +34,7 @@ raise SystemExit(0 if ok else 1)
 PY
 then
   echo "[start] torchvision::nms missing; installing matching torch/torchvision cu124 wheels..."
-  python3 -m pip install -q --extra-index-url https://download.pytorch.org/whl/cu124 \
+  python3 -m pip install -q --force-reinstall --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 \
     "torch==2.4.1+cu124" "torchvision==0.19.1+cu124"
 fi
 
@@ -44,7 +44,7 @@ pip install --upgrade pip
 # Remove MuseTalk-related packages from the venv — they must live in system
 # Python alongside torch/torchvision so all C extensions share the same process.
 # pip uninstall is a no-op if already absent, so this is always safe.
-pip uninstall -y diffusers accelerate huggingface-hub transformers tokenizers 2>/dev/null || true
+pip uninstall -y torch torchvision torchaudio diffusers accelerate huggingface-hub transformers tokenizers 2>/dev/null || true
 pip install -r requirements.txt
 set -a
 source .env
