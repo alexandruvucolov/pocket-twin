@@ -10,6 +10,16 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+# Install MuseTalk dependencies into SYSTEM Python (same environment as
+# torch/torchvision/mmcv/mmpose) so they all share the same C extensions and
+# op registrations.  Installing these into the venv while torch stays in system
+# causes torchvision::nms op-registration failures inside diffusers because the
+# torchvision shared library is never linked into the venv Python process.
+python3 -m pip install -q \
+  "huggingface-hub>=1.0.0" \
+  "diffusers>=0.30.0" \
+  "accelerate>=0.34.0"
+
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip

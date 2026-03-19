@@ -109,8 +109,6 @@ def _load_models() -> bool:
             return False
 
         import torch  # noqa: PLC0415
-        import torchvision  # noqa: PLC0415  # must be imported before diffusers to register torchvision::nms op
-        _ = torchvision  # suppress unused-import warning
 
         # MuseTalk's preprocessing.py initialises models at module level using
         # *relative* paths ("./models/dwpose/…").  We must be inside the
