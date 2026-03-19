@@ -124,9 +124,21 @@ def _load_models() -> bool:
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        vae_type = None
+        for candidate in ("sd-vae", "sd-vae-ft-mse"):
+            cfg_path = MUSETALK_DIR / "models" / candidate / "config.json"
+            if cfg_path.exists():
+                vae_type = candidate
+                break
+        if vae_type is None:
+            raise FileNotFoundError(
+                "MuseTalk VAE weights missing. Expected one of: "
+                "models/sd-vae/config.json or models/sd-vae-ft-mse/config.json"
+            )
+
         vae, unet, pe = load_all_model(
             unet_model_path=str(MUSETALK_DIR / "models/musetalkV15/unet.pth"),
-            vae_type="sd-vae",
+            vae_type=vae_type,
             unet_config=str(MUSETALK_DIR / "models/musetalkV15/musetalk.json"),
             device=device,
         )
