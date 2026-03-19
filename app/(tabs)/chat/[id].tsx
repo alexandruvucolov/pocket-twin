@@ -51,6 +51,12 @@ const VOICE_TRANSCRIPT_BUBBLE_HEIGHT = 84;
 // How many px the chat section rises above the avatar panel bottom.
 // Approx height of 2 message bubbles, so they float visually over the avatar.
 const CHAT_OVERLAP = 96;
+// Local phone TTS can be memory-heavy on some devices and cause white-screen
+// crashes. Keep disabled by default; enable explicitly if needed.
+const ENABLE_LOCAL_PHONE_TTS =
+  (process.env.EXPO_PUBLIC_ENABLE_LOCAL_PHONE_TTS ?? "false")
+    .trim()
+    .toLowerCase() === "true";
 
 type ActiveLiveSession = {
   provider: "backend";
@@ -266,6 +272,10 @@ export default function ChatScreen() {
 
   const playLiveBackendAudio = useCallback(
     (text: string): Promise<void> => {
+      if (!ENABLE_LOCAL_PHONE_TTS) {
+        return Promise.resolve();
+      }
+
       setIsSpeaking(true);
       return new Promise<void>((resolve) => {
         textToSpeech(text)
@@ -543,9 +553,10 @@ export default function ChatScreen() {
       const raw = err instanceof Error ? err.message : String(err);
       // Cap the message so a long server error body never fills the screen.
       const msg = raw.length > 200 ? `${raw.slice(0, 200)}\u2026` : raw;
-      const hint = msg.includes("502") || msg.includes("503")
-        ? "The backend pod may be starting up or unreachable. Try again in a few seconds."
-        : "Make sure EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL points to your RunPod backend and the service is online.";
+      const hint =
+        msg.includes("502") || msg.includes("503")
+          ? "The backend pod may be starting up or unreachable. Try again in a few seconds."
+          : "Make sure EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL points to your RunPod backend and the service is online.";
       Alert.alert("Live session failed", `${msg}\n\n${hint}`);
     } finally {
       setIsLiveConnecting(false);
@@ -1150,6 +1161,10 @@ export default function ChatScreen() {
 
   /** Returns a Promise that resolves when TTS playback finishes (or fails). */
   const speakReplyAndWait = (text: string): Promise<void> => {
+    if (!ENABLE_LOCAL_PHONE_TTS) {
+      return Promise.resolve();
+    }
+
     lastSpokenTextRef.current = text;
     return new Promise((resolve) => {
       setIsSpeaking(true);
