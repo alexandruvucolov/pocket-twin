@@ -177,7 +177,7 @@ def _solve_tps_unit(
     n = len(ctrl_pts)
     diff = ctrl_pts[:, None] - ctrl_pts[None]       # (n,n,2)
     K = _tps_kernel((diff ** 2).sum(axis=2))         # (n,n)
-    K += np.eye(n) * 1e-3                            # regularisation
+    K += np.eye(n) * 0.08                            # regularisation (higher = smoother, no rings)
     P = np.hstack([np.ones((n, 1)), ctrl_pts])       # (n,3)
     M = np.block([[K, P], [P.T, np.zeros((3, 3))]])  # (n+3, n+3)
     rhs = np.vstack([displacements, np.zeros((3, 2))])  # (n+3, 2)
@@ -262,12 +262,14 @@ class PlaceholderTrack(VideoStreamTrack):
                 logger.warning("MediaPipe could not detect a face – using edge-based mouth-centre fallback.")
                 self._mouth_center_x, self._mouth_center_y = self._detect_mouth_center(source_frame)
         # TPS precomputed displacement maps ----------------------------------
-        self._tps_coeff: np.ndarray | None = None
-        self._tps_ctrl:  np.ndarray | None = None
+        self._tps_dx:   np.ndarray | None = None
+        self._tps_dy:   np.ndarray | None = None
+        self._tps_mask: np.ndarray | None = None
         if self._lip_data is not None:
-            self._tps_coeff, self._tps_ctrl = self._precompute_tps(self._lip_data)
-            if self._tps_coeff is not None:
-                logger.info("TPS mouth warp precomputed (%d control points).", len(self._tps_ctrl))
+            tdx, tdy, tmsk = self._precompute_tps(self._lip_data)
+            if tdx is not None:
+                self._tps_dx, self._tps_dy, self._tps_mask = tdx, tdy, tmsk
+                logger.info("TPS mouth warp precomputed (displacement field ready).")
             else:
                 logger.warning("TPS precomputation failed – falling back to center warp.")
         # Motion state -------------------------------------------------------
@@ -485,107 +487,155 @@ class PlaceholderTrack(VideoStreamTrack):
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _precompute_tps(ld: dict) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-        """Build TPS control-point set and solve the system once per session.
+    def _precompute_tps(
+        ld: dict,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
+        """Solve TPS once → evaluate on full 512×512 grid → return (dx, dy, blend_mask).
 
-        Control points:
-          • 8 mouth landmarks  (upper centre, upper-left, upper-right,
-                               lower centre, lower-left, lower-right,
-                               left corner, right corner)
-          • 6 face anchors     (nose tip, chin, left cheek, right cheek,
-                               plus two mid-face points derived from geometry)
-          • 4 image-corner anchors
-        Anchor displacement = (0, 0) — they do not move.
+        At runtime the only cost is:  warp_x = grid_x + mouth_open * dx
+        The blend_mask ensures the deformation stays local to the mouth — no
+        circles or ripples can escape to the rest of the face.
         """
-        upper_x  = ld["upper_x"];  upper_y  = ld["upper_y"]
-        lower_x  = ld["lower_x"];  lower_y  = ld["lower_y"]
+        upper_x     = ld["upper_x"];  upper_y  = ld["upper_y"]
+        lower_x     = ld["lower_x"];  lower_y  = ld["lower_y"]
         natural_gap = ld["natural_gap"]
         lip_width   = ld["width"]
+        center_x    = ld["center_x"]
+        mouth_cy    = (upper_y + lower_y) / 2.0
 
-        max_shift   = max(natural_gap * 4.0, lip_width * 0.48) + 28.0
-        upper_shift = max_shift * 0.42   # upward   (negative dy)
-        lower_shift = max_shift * 0.58   # downward (positive dy)
-        corner_dy   = lower_shift * 0.18  # corners dip very slightly
-        corner_dx   = lip_width   * 0.06  # corners spread outward
+        # ---- conservative displacements: about 3× smaller than before ----
+        max_shift   = min(max(natural_gap * 2.0, lip_width * 0.20) + 6.0, 22.0)
+        upper_shift = max_shift * 0.40
+        lower_shift = max_shift * 0.60
+        corner_dy   = lower_shift * 0.10
+        corner_dx   = lip_width   * 0.04
 
-        def pt(key: str) -> list[float]:
-            x, y = ld[key]
-            return [x, y]
+        # near-mouth boundary ring: zero-displacement anchors just outside
+        # the lip edge — they clamp the TPS field so it decays within ~1 lip-
+        # width instead of rippling across the face
+        margin_v = max_shift * 0.9 + lip_width * 0.15
+        margin_h = lip_width * 0.60
+        lcx, lcy = ld["left_corner_pt"]
+        rcx, rcy = ld["right_corner_pt"]
 
         # fmt: off
         src_list = [
-            # mouth
-            [upper_x,                  upper_y       ],  # 0 upper-centre
-            list(ld["upper_left_pt"  ]),                  # 1 upper-left
-            list(ld["upper_right_pt" ]),                  # 2 upper-right
-            [lower_x,                  lower_y       ],  # 3 lower-centre
-            list(ld["lower_left_pt"  ]),                  # 4 lower-left
-            list(ld["lower_right_pt" ]),                  # 5 lower-right
-            list(ld["left_corner_pt" ]),                  # 6 left corner
-            list(ld["right_corner_pt"]),                  # 7 right corner
-            # face anchors
-            list(ld["nose_tip_pt"    ]),                  # 8
-            list(ld["chin_pt"        ]),                  # 9
-            list(ld["left_cheek_pt" ]),                  # 10
-            list(ld["right_cheek_pt"]),                  # 11
-            # image corners (hard anchors)
-            [0.0,   0.0  ],                               # 12
-            [511.0, 0.0  ],                               # 13
-            [0.0,   511.0],                               # 14
-            [511.0, 511.0],                               # 15
+            # --- mouth control points (8) ---
+            [upper_x,  upper_y],                    # 0 upper-centre
+            list(ld["upper_left_pt"  ]),             # 1
+            list(ld["upper_right_pt" ]),             # 2
+            [lower_x,  lower_y],                    # 3 lower-centre
+            list(ld["lower_left_pt"  ]),             # 4
+            list(ld["lower_right_pt" ]),             # 5
+            [lcx, lcy],                             # 6 left corner
+            [rcx, rcy],                             # 7 right corner
+            # --- near-mouth zero ring (8): clamp field locally ---
+            [center_x,          upper_y - margin_v],  # 8  above
+            [center_x,          lower_y + margin_v],  # 9  below
+            [lcx - margin_h,    mouth_cy           ],  # 10 left
+            [rcx + margin_h,    mouth_cy           ],  # 11 right
+            [center_x,          upper_y - margin_v * 2.0],  # 12 far above
+            [center_x,          lower_y + margin_v * 2.0],  # 13 far below
+            [lcx - margin_h * 2,mouth_cy           ],  # 14 far left
+            [rcx + margin_h * 2,mouth_cy           ],  # 15 far right
+            # --- face anchors (4) ---
+            list(ld["nose_tip_pt"    ]),             # 16
+            list(ld["chin_pt"        ]),             # 17
+            list(ld["left_cheek_pt" ]),             # 18
+            list(ld["right_cheek_pt"]),             # 19
+            # --- image corners (4) ---
+            [0.0,   0.0  ],                         # 20
+            [511.0, 0.0  ],                         # 21
+            [0.0,   511.0],                         # 22
+            [511.0, 511.0],                         # 23
         ]
         disp_list = [
-            # mouth — dy negative = moves up
-            [  0.0,          -upper_shift ],  # 0
-            [  0.0,          -upper_shift * 0.85],  # 1
-            [  0.0,          -upper_shift * 0.85],  # 2
-            [  0.0,          +lower_shift ],  # 3
-            [  0.0,          +lower_shift * 0.85],  # 4
-            [  0.0,          +lower_shift * 0.85],  # 5
-            [ -corner_dx,    +corner_dy   ],  # 6 left corner opens left+down
-            [ +corner_dx,    +corner_dy   ],  # 7 right corner opens right+down
-            # anchors — zero displacement
-            [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0],
-            [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0],
+            [  0.0,  -upper_shift        ],  # 0
+            [  0.0,  -upper_shift * 0.80 ],  # 1
+            [  0.0,  -upper_shift * 0.80 ],  # 2
+            [  0.0,  +lower_shift        ],  # 3
+            [  0.0,  +lower_shift * 0.80 ],  # 4
+            [  0.0,  +lower_shift * 0.80 ],  # 5
+            [-corner_dx, +corner_dy      ],  # 6
+            [+corner_dx, +corner_dy      ],  # 7
+            # near-mouth ring: all zero
+            [0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],
+            # face + image-corner anchors: all zero
+            [0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],
         ]
         # fmt: on
         ctrl = np.array(src_list,  dtype=np.float64)
         disp = np.array(disp_list, dtype=np.float64)
-        return _solve_tps_unit(ctrl, disp)
+
+        coeff, ctrl_f = _solve_tps_unit(ctrl, disp)
+        if coeff is None:
+            return None, None, None
+
+        # ---- evaluate displacement field on full 512×512 grid once -------
+        gx, gy = np.meshgrid(
+            np.arange(512, dtype=np.float32),
+            np.arange(512, dtype=np.float32),
+        )
+        dx, dy = _eval_tps(coeff, ctrl_f, gx, gy)
+
+        # ---- soft blend mask: Gaussian ellipse centred on the mouth ------
+        # Pixels outside ~1.5× lip-width are untouched — that stops any
+        # residual TPS ripple from reaching the nose, eyes, or cheeks.
+        mask_hw = lip_width  * 0.85          # half-width
+        mask_hh = max_shift  * 3.0 + 14.0   # half-height (covers full excursion)
+        dist2   = (
+            ((gx - center_x) / (mask_hw + 1e-6)) ** 2
+            + ((gy - mouth_cy) / (mask_hh + 1e-6)) ** 2
+        )
+        # Smooth cosine falloff: 1 inside ellipse, 0 outside
+        blend = np.clip((1.6 - dist2), 0.0, 1.0).astype(np.float32)
+        sigma = max(lip_width * 0.10, 3.0)
+        blend = cv2.GaussianBlur(blend, (0, 0), sigmaX=sigma, sigmaY=sigma)
+        blend = np.clip(blend, 0.0, 1.0)[..., None]   # (512, 512, 1)
+
+        return dx.astype(np.float32), dy.astype(np.float32), blend
 
     def _apply_tps_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
-        """Thin-plate spline warp — the only per-frame cost is one (H,W) multiply."""
+        """TPS warp — per-frame cost: one multiply + remap + blend (no solver call)."""
         H, W = image.shape[:2]
-        grid_x, grid_y = np.meshgrid(
-            np.arange(W, dtype=np.float32),
-            np.arange(H, dtype=np.float32),
-        )
-        dx, dy = _eval_tps(self._tps_coeff, self._tps_ctrl, grid_x, grid_y)
-        # reverse map: output pixel at (y,x) samples source at (y+dy*t, x+dx*t)
-        warp_x = grid_x + dx * mouth_open
-        warp_y = grid_y + dy * mouth_open
-        result = cv2.remap(
-            image,
-            warp_x,
-            warp_y,
+        gx = np.arange(W, dtype=np.float32)
+        gy = np.arange(H, dtype=np.float32)
+        grid_x, grid_y = np.meshgrid(gx, gy)
+
+        warp_x = grid_x + self._tps_dx * mouth_open
+        warp_y = grid_y + self._tps_dy * mouth_open
+        warped = cv2.remap(
+            image, warp_x, warp_y,
             interpolation=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_REFLECT_101,
         )
-        # Mouth-cavity shadow scaled to actual opening
-        lip_mid_y = (self._lip_data["upper_y"] + self._lip_data["lower_y"]) / 2.0  # type: ignore[index]
-        gap_half  = max(mouth_open * (self._lip_data["natural_gap"] * 4.0 + 28.0) * 0.40, 1.0)  # type: ignore[index]
-        cx        = self._lip_data["center_x"]    # type: ignore[index]
-        lw        = self._lip_data["width"]        # type: ignore[index]
+
+        # Blend: original image outside mouth region — TPS ripples can't escape
+        # Scale mask by mouth_open so it fades in with opening
+        mask = np.clip(self._tps_mask * (mouth_open * 2.2), 0.0, 1.0)
+        blended = np.clip(
+            image.astype(np.float32) * (1.0 - mask)
+            + warped.astype(np.float32) * mask,
+            0, 255,
+        ).astype(np.uint8)
+
+        # Mouth-cavity shadow (inside the opening only)
+        ld        = self._lip_data   # type: ignore[index]
+        lip_mid_y = (ld["upper_y"] + ld["lower_y"]) / 2.0
+        gap_half  = max(mouth_open * (ld["natural_gap"] * 2.0 + 6.0) * 0.55, 1.0)
+        cx        = ld["center_x"]
+        lw        = ld["width"]
         inner_dy  = np.abs(grid_y - lip_mid_y)
-        inner_dx  = np.abs(grid_x - cx) / (lw * 0.42 + 1e-6)
+        inner_dx  = np.abs(grid_x - cx) / (lw * 0.38 + 1e-6)
+        shadow_str = float(np.clip(0.05 + mouth_open * 0.20, 0.0, 0.28))
         shadow_mask = (
             np.clip(1.0 - inner_dx, 0.0, 1.0)
             * np.clip(1.0 - inner_dy / gap_half, 0.0, 1.0)
-            * float(np.clip(0.08 + mouth_open * 0.26, 0.0, 0.38))
+            * shadow_str
         )[..., None]
-        dark = np.full_like(result, (16, 12, 18), dtype=np.uint8)
+        dark = np.full_like(blended, (14, 10, 16), dtype=np.uint8)
         return np.clip(
-            result.astype(np.float32) * (1.0 - shadow_mask)
+            blended.astype(np.float32) * (1.0 - shadow_mask)
             + dark.astype(np.float32) * shadow_mask,
             0, 255,
         ).astype(np.uint8)
@@ -593,7 +643,7 @@ class PlaceholderTrack(VideoStreamTrack):
     def _apply_mouth_warp(self, image: np.ndarray, mouth_open: float) -> np.ndarray:
         if mouth_open <= 0.01:
             return image
-        if self._tps_coeff is not None:
+        if self._tps_dx is not None:
             return self._apply_tps_warp(image, mouth_open)
         return self._apply_center_warp(image, mouth_open)
 
