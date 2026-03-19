@@ -16,6 +16,7 @@ import copy
 import logging
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,23 @@ MUSETALK_DIR = Path(os.environ.get("MUSETALK_DIR", "/workspace/MuseTalk"))
 # ---------------------------------------------------------------------------
 _models: dict[str, Any] = {}
 _models_available: Optional[bool] = None   # None = not yet probed
+_models_load_lock = threading.Lock()       # prevent concurrent load attempts
+
+# musetalk sub-modules that may be left in a broken state if an import fails
+# mid-way; purging them lets the next attempt do a clean import.
+_MUSETALK_SUBMODULES = [
+    "musetalk",
+    "musetalk.utils",
+    "musetalk.utils.utils",
+    "musetalk.utils.audio_processor",
+    "musetalk.utils.face_parsing",
+    "musetalk.utils.preprocessing",
+    "musetalk.utils.blending",
+    "musetalk.models",
+    "musetalk.models.vae",
+    "musetalk.models.unet",
+    "musetalk.models.pe",
+]
 
 
 @dataclass
@@ -68,19 +86,28 @@ def _load_models() -> bool:
     if _models_available is not None:
         return _models_available
 
-    if not MUSETALK_DIR.exists():
-        logger.warning(
-            "MuseTalk directory not found at %s. "
-            "Mouth animation will use TPS warp fallback.",
-            MUSETALK_DIR,
-        )
-        _models_available = False
-        return False
+    # Prevent concurrent coroutines from each racing into the heavy import
+    # block simultaneously, which produces duplicate / conflicting module stubs.
+    if not _models_load_lock.acquire(blocking=False):
+        # Another thread/coroutine is already loading; wait until it finishes.
+        with _models_load_lock:
+            pass
+        return _models_available if _models_available is not None else False
 
+    # Lock is now held by this caller; release it in all exit paths.
     musetalk_str = str(MUSETALK_DIR)
     orig_cwd = os.getcwd()
 
     try:
+        if not MUSETALK_DIR.exists():
+            logger.warning(
+                "MuseTalk directory not found at %s. "
+                "Mouth animation will use TPS warp fallback.",
+                MUSETALK_DIR,
+            )
+            _models_available = False
+            return False
+
         import torch  # noqa: PLC0415
 
         # MuseTalk's preprocessing.py initialises models at module level using
@@ -134,10 +161,16 @@ def _load_models() -> bool:
             "MuseTalk model load failed (%s). TPS warp fallback active.",
             exc, exc_info=True,
         )
+        # Purge any partially-initialised musetalk modules from the import
+        # cache so that a later attempt (e.g. after an env fix + restart) gets
+        # a clean slate rather than seeing broken stubs.
+        for _mod in _MUSETALK_SUBMODULES:
+            sys.modules.pop(_mod, None)
         _models_available = False
 
     finally:
         os.chdir(orig_cwd)
+        _models_load_lock.release()
 
     return _models_available
 

@@ -8,11 +8,11 @@ opencv-python-headless==4.11.0.86
 av==13.1.0
 mediapipe==0.10.21
 httpx>=0.27.0
-# MuseTalk deps — installed in venv so they shadow the incompatible system versions
-# (system diffusers/transformers pin huggingface-hub<1.0 but system has 1.7.1)
-# Torch pinned to CUDA build matching system torchvision 0.19.1+cu124
---extra-index-url https://download.pytorch.org/whl/cu124
-torch==2.4.1+cu124
+# MuseTalk deps — installed in venv so they shadow the incompatible system versions.
+# torch/torchvision are NOT installed in venv; they are found via sys.path.append
+# on the system site-packages (torch 2.4.1+cu124 / torchvision 0.19.1+cu124).
+# Installing torch in both venv AND system produces two torch.Tensor class objects
+# in the same process, which breaks diffusers' infer_schema op registration.
 huggingface-hub>=1.0.0
 transformers>=4.48.0
 diffusers>=0.30.0
