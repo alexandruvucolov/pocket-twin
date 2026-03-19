@@ -102,7 +102,7 @@ async function readImageAsBase64(uri: string) {
 
 /**
  * Compress + resize to max 1024 px wide JPEG before upload.
- * Keeps D-ID happy (< 10 MB) and saves Firebase Storage bandwidth.
+ * Keeps uploads lightweight and saves Firebase Storage bandwidth.
  */
 async function compressImage(uri: string): Promise<string> {
   try {

@@ -333,7 +333,7 @@ Recommended order from here:
 2. Firebase Storage for avatar photos
 3. Replace local `imageUri` with Storage download URLs
 4. Add Cloud Functions or your backend for AI/chat logic
-5. Add D-ID integration
+5. Connect the live avatar backend
 6. Add payments
 
 ---

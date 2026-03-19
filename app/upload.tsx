@@ -59,7 +59,7 @@ export default function UploadScreen() {
     player.loop = true;
   });
 
-  // Update player source when D-ID resolves
+  // Update player source when preview generation resolves
   React.useEffect(() => {
     if (videoUrl) {
       videoPlayer.replace(videoUrl);

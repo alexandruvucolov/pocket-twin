@@ -503,10 +503,11 @@ class PlaceholderTrack(VideoStreamTrack):
         center_x    = ld["center_x"]
         mouth_cy    = (upper_y + lower_y) / 2.0
 
-        # ---- conservative displacements: about 3× smaller than before ----
+        # ---- conservative displacements: natural jaw drop ----
         max_shift   = min(max(natural_gap * 2.0, lip_width * 0.20) + 6.0, 22.0)
-        upper_shift = max_shift * 0.40
-        lower_shift = max_shift * 0.60
+        # Fix unnatural stretch: force lower lip to do 90% of the movement (mimic natural jaw drop)
+        upper_shift = max_shift * 0.10
+        lower_shift = max_shift * 0.90
         corner_dy   = lower_shift * 0.10
         corner_dx   = lip_width   * 0.04
 
@@ -564,8 +565,14 @@ class PlaceholderTrack(VideoStreamTrack):
             [0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],
         ]
         # fmt: on
-        ctrl = np.array(src_list,  dtype=np.float64)
-        disp = np.array(disp_list, dtype=np.float64)
+        # Eliminate ripples without making it stiff:
+        # We scale inputs down by lip_width. This forces the coordinates to be small, 
+        # which means the base Kernel magnitudes drastically shrink. The global `0.08` 
+        # regularization matrix injection in _solve_tps_unit thus achieves correct relative
+        # scale dominance to naturally smooth the spatial displacements and stop all ringing.
+        scale_fac = lip_width
+        ctrl = np.array(src_list,  dtype=np.float64) / scale_fac
+        disp = np.array(disp_list, dtype=np.float64) / scale_fac
 
         coeff, ctrl_f = _solve_tps_unit(ctrl, disp)
         if coeff is None:
@@ -576,7 +583,13 @@ class PlaceholderTrack(VideoStreamTrack):
             np.arange(512, dtype=np.float32),
             np.arange(512, dtype=np.float32),
         )
-        dx, dy = _eval_tps(coeff, ctrl_f, gx, gy)
+
+        # Evaluate using the scaled grid matching our scaled coefficients
+        dx, dy = _eval_tps(coeff, ctrl_f, gx / scale_fac, gy / scale_fac)
+        
+        # Restore scaling magnitude back to absolute pixel displacements
+        dx *= scale_fac
+        dy *= scale_fac
 
         # ---- soft blend mask: Gaussian ellipse centred on the mouth ------
         # Pixels outside ~1.5× lip-width are untouched — that stops any

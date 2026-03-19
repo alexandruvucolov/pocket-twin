@@ -61,6 +61,32 @@ If you want spoken video replies later, use either:
 - a custom worker that converts audio to motion first, or
 - a separate audio-driven talking-head model
 
+## Lip-only retargeting
+
+LivePortrait can be driven in a lip-focused mode where only the mouth motion is transferred while head pose, gaze, and most other expression channels stay fixed.
+
+This repo now supports passing lip-only hints through the live avatar session contract and backend Runpod request.
+
+Backend envs:
+
+```dotenv
+LIVE_AVATAR_LIVEPORTRAIT_MODE=lips-only
+LIVE_AVATAR_LIVEPORTRAIT_MOTION_TEMPLATE_URL=
+LIVE_AVATAR_LIVEPORTRAIT_PRESERVE_HEAD_POSE=true
+LIVE_AVATAR_LIVEPORTRAIT_PRESERVE_EYE_GAZE=true
+LIVE_AVATAR_LIVEPORTRAIT_NORMALIZE_LIPS=true
+```
+
+If your Runpod worker expects different parameter names, set them through:
+
+```dotenv
+LIVE_AVATAR_LIVEPORTRAIT_DEFAULT_INPUT_JSON={"retarget_module":"R_lip","animation_region":"lips"}
+```
+
+That raw JSON is merged into the Runpod `input` payload, so you can map to the exact worker schema without changing app code again.
+
+If you do not already have a worker-side normalization layer, use the reference shim in [liveportrait-runpod-worker/README.md](liveportrait-runpod-worker/README.md).
+
 ## Realtime streaming with WebRTC
 
 Yes, realtime streaming is possible, but the architecture is different from the async preview flow.
@@ -297,4 +323,4 @@ The new Runpod integration is currently used for avatar creation preview generat
 
 The conversation reply path is still separate because LivePortrait alone does not accept raw reply audio as input.
 
-The existing WebRTC code in this app came from the D-ID live experiment. It can be reused as the app-side transport once you have a realtime Runpod backend.
+The app now uses the custom live avatar backend for realtime WebRTC replies.
