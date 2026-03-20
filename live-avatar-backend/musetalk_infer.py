@@ -158,10 +158,10 @@ def _make_lip_alpha_mask(
     mask = np.zeros((crop_h, crop_w), dtype=np.float32)
     cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    rx = int(crop_w * 0.24)
-    ry = int(crop_h * 0.10)
+    rx = int(crop_w * 0.28)
+    ry = int(crop_h * 0.12)
     cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    mask = cv2.GaussianBlur(mask, (11, 11), 0)
+    mask = cv2.GaussianBlur(mask, (15, 15), 0)
     mask = np.power(mask, 1.2).astype(np.float32)
     return mask
 
@@ -212,19 +212,14 @@ def _fallback_blend(
                          interpolation=cv2.INTER_LANCZOS4)
 
     alpha = _make_lip_alpha_mask(bh, bw)                # float32 [0,1]
+    # Cap at 0.6 so original sharp texture always bleeds through.
+    # This hides VAE blurriness while keeping visible lip motion.
+    alpha = np.clip(alpha * 0.60, 0.0, 0.60)
     alpha3 = np.stack([alpha, alpha, alpha], axis=-1)
     src = original[y1:y2, x1:x2].astype(np.float32)
     gen_corr = _match_chroma_to_source(original[y1:y2, x1:x2], roi_gen, alpha)
     gen = gen_corr.astype(np.float32)
     blended = (gen * alpha3 + src * (1.0 - alpha3)).clip(0, 255).astype(np.uint8)
-
-    # Preserve original skin texture near blend boundary to avoid perceived blur.
-    edge = np.clip((alpha - 0.55) / 0.45, 0.0, 1.0).astype(np.float32)
-    edge3 = np.stack([edge, edge, edge], axis=-1)
-    blended = (
-        blended.astype(np.float32) * edge3
-        + original[y1:y2, x1:x2].astype(np.float32) * (1.0 - edge3)
-    ).clip(0, 255).astype(np.uint8)
     out[y1:y2, x1:x2] = blended
     return out
 
@@ -457,23 +452,19 @@ def prepare_avatar(
         mask_coords_list_cycle: list = []
         for i, frame in enumerate(frame_list_cycle):
             x1, y1, x2, y2 = coord_list_cycle[i]
-            if used_fallback_bbox:
-                # Skip face-parser masking — build our own elliptical lip mask
-                # so we avoid the broad dissolve that face-parser produces when
-                # the bbox does not come from proper DWPose landmarks.
-                mask_list_cycle.append(None)   # sentinel: use _fallback_blend
-                mask_coords_list_cycle.append(None)
-            else:
-                try:
-                    mask, crop_box = get_image_prepare_material(
-                        frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
-                    )
-                except Exception:
-                    mask, crop_box = get_image_prepare_material(
-                        frame, [x1, y1, x2, y2], fp=fp, mode="mouth"
-                    )
+            # Always try to use get_image_prepare_material — it only needs
+            # FaceParsing (BiSeNet), NOT DWPose. It generates a pixel-accurate
+            # lower-face mask with the official 10%-of-image Gaussian blur.
+            try:
+                mask, crop_box = get_image_prepare_material(
+                    frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
+                )
                 mask_list_cycle.append(mask)
                 mask_coords_list_cycle.append(crop_box)
+            except Exception as exc:
+                logger.warning("get_image_prepare_material failed (frame %d): %s", i, exc)
+                mask_list_cycle.append(None)
+                mask_coords_list_cycle.append(None)
 
         logger.info(
             "MuseTalk avatar '%s' prepared: %d cycle frames",
