@@ -663,7 +663,7 @@ async def _musetalk_speak(
             if prep_task is not None and not prep_task.done():
                 logger.info("MuseTalk: waiting for background avatar prep to finish...")
                 try:
-                    await asyncio.wait_for(asyncio.shield(prep_task), timeout=30.0)
+                    await asyncio.wait_for(asyncio.shield(prep_task), timeout=120.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     logger.warning("MuseTalk: timed out waiting for eager prep task")
             # If prep task failed or was never started, fall back to inline prep
