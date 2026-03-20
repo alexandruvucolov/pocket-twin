@@ -342,31 +342,37 @@ export default function ChatScreen() {
         });
         // Play audio returned from the backend — same bytes used for MuseTalk,
         // so there is exactly one ElevenLabs call per message.
+        // Await playback completion so the voice loop doesn't restart the mic
+        // while the avatar is still speaking (would cause echo / lost turn).
         if (audioResult.audioBase64) {
           setIsSpeaking(true);
-          try {
-            const fileUri =
-              (FileSystem.cacheDirectory ?? "") + `tts_${Date.now()}.mp3`;
-            await FileSystem.writeAsStringAsync(
-              fileUri,
-              audioResult.audioBase64,
-              { encoding: FileSystem.EncodingType.Base64 },
-            );
-            ttsPlayer.replace({ uri: fileUri });
-            ttsPlayer.play();
-            const sub = ttsPlayer.addListener(
-              "playbackStatusUpdate",
-              (status) => {
-                if (status.didJustFinish) {
-                  setIsSpeaking(false);
-                  sub.remove();
-                }
-              },
-            );
-          } catch (audioErr) {
-            console.warn("[TTS] Failed to play backend audio:", audioErr);
-            setIsSpeaking(false);
-          }
+          await new Promise<void>(async (resolve) => {
+            try {
+              const fileUri =
+                (FileSystem.cacheDirectory ?? "") + `tts_${Date.now()}.mp3`;
+              await FileSystem.writeAsStringAsync(
+                fileUri,
+                audioResult.audioBase64,
+                { encoding: FileSystem.EncodingType.Base64 },
+              );
+              ttsPlayer.replace({ uri: fileUri });
+              ttsPlayer.play();
+              const sub = ttsPlayer.addListener(
+                "playbackStatusUpdate",
+                (status) => {
+                  if (status.didJustFinish) {
+                    setIsSpeaking(false);
+                    sub.remove();
+                    resolve();
+                  }
+                },
+              );
+            } catch (audioErr) {
+              console.warn("[TTS] Failed to play backend audio:", audioErr);
+              setIsSpeaking(false);
+              resolve();
+            }
+          });
         }
       } catch (err) {
         // If the backend session is gone (e.g. pod was restarted), clean up the
