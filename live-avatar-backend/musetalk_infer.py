@@ -195,6 +195,66 @@ def _match_chroma_to_source(
     return cv2.cvtColor(corrected, cv2.COLOR_YCrCb2BGR)
 
 
+def _poisson_blend_refinement(
+    alpha_blended: np.ndarray,
+    original: np.ndarray,
+    mask_array: np.ndarray,
+    crop_box: list,
+) -> np.ndarray:
+    """Apply Poisson seamless cloning on top of the alpha-blended result.
+
+    This removes the visible dissolving border that Gaussian alpha blending
+    produces around the mouth/chin/cheek region, replacing it with a seamless
+    transition that matches color and texture at the boundary.
+
+    Uses MIXED_CLONE which preserves the background texture (skin pores etc.)
+    while transplanting the generated mouth motion — giving the cleanest result.
+    Falls back silently to alpha_blended if anything goes wrong.
+    """
+    try:
+        x_s, y_s, x_e, y_e = [int(v) for v in crop_box]
+        h, w = original.shape[:2]
+        x_s = max(0, x_s); y_s = max(0, y_s)
+        x_e = min(w, x_e); y_e = min(h, y_e)
+        if x_e - x_s < 16 or y_e - y_s < 16:
+            return alpha_blended
+
+        crop_h, crop_w = y_e - y_s, x_e - x_s
+
+        # Convert Gaussian mask_array to uint8 binary at crop size
+        ma = mask_array
+        if ma.dtype != np.uint8:
+            ma = (np.clip(ma, 0, 255)).astype(np.uint8)
+        if ma.shape[:2] != (crop_h, crop_w):
+            ma = cv2.resize(ma, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+
+        _, binary = cv2.threshold(ma, 25, 255, cv2.THRESH_BINARY)
+        # Erode so the mask stays away from the crop boundary (seamlessClone
+        # requires the white region not to touch the image/mask edge)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        binary = cv2.erode(binary, kernel, iterations=2)
+
+        if binary.max() == 0:
+            return alpha_blended
+
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        full_mask[y_s:y_e, x_s:x_e] = binary
+
+        cx = (x_s + x_e) // 2
+        cy = (y_s + y_e) // 2
+
+        # Ensure center point is well inside frame (seamlessClone requirement)
+        cx = int(np.clip(cx, 3, w - 4))
+        cy = int(np.clip(cy, 3, h - 4))
+
+        return cv2.seamlessClone(
+            alpha_blended, original, full_mask, (cx, cy), cv2.MIXED_CLONE
+        )
+    except Exception as exc:
+        logger.debug("Poisson blend failed (%s); using alpha-blend result", exc)
+        return alpha_blended
+
+
 def _fallback_blend(
     original: np.ndarray,
     generated_crop: np.ndarray,
@@ -644,7 +704,8 @@ def synthesize(
                 # Fallback path — use our custom elliptical lip mask/blender
                 combined.append(_fallback_blend(ori, res_frame, bbox))
             else:
-                combined.append(get_image_blending(ori, res_frame, bbox, mask, mcb))
+                alpha_blended = get_image_blending(ori, res_frame, bbox, mask, mcb)
+                combined.append(_poisson_blend_refinement(alpha_blended, ori, mask, mcb))
 
         logger.info(
             "MuseTalk synthesized %d frames in %.2fs",
