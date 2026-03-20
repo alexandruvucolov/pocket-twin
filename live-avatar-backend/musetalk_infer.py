@@ -150,22 +150,48 @@ def _detect_lip_bbox_opencv(
 def _make_lip_alpha_mask(
     crop_h: int, crop_w: int,
 ) -> np.ndarray:
-    """Tight mouth-only mask for fallback blending.
+    """Soft mouth-only mask for fallback blending.
 
-    Keeps lip movement but avoids dissolving cheeks/chin by using:
-    - a smaller ellipse around the mouth
-    - moderate blur
-    - a steeper edge falloff
+    This keeps transitions natural around the lips while limiting changes to
+    the mouth area.
     """
     mask = np.zeros((crop_h, crop_w), dtype=np.float32)
     cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    rx = int(crop_w * 0.28)
-    ry = int(crop_h * 0.12)
+    rx = int(crop_w * 0.32)
+    ry = int(crop_h * 0.14)
     cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    mask = cv2.GaussianBlur(mask, (17, 17), 0)
-    mask = np.power(mask, 1.35).astype(np.float32)
+    mask = cv2.GaussianBlur(mask, (31, 31), 0)
     return mask
+
+
+def _match_chroma_to_source(
+    src_bgr: np.ndarray,
+    gen_bgr: np.ndarray,
+    alpha: np.ndarray,
+) -> np.ndarray:
+    """Match generated patch chroma to source patch inside the mouth mask.
+
+    We keep luminance from the generated patch (mouth motion detail) and align
+    only chroma channels (Cr/Cb equivalent in YCrCb) to avoid blue/purple tint.
+    """
+    mask = alpha > 0.08
+    if int(mask.sum()) < 32:
+        return gen_bgr
+
+    src_ycc = cv2.cvtColor(src_bgr.astype(np.uint8), cv2.COLOR_BGR2YCrCb).astype(np.float32)
+    gen_ycc = cv2.cvtColor(gen_bgr.astype(np.uint8), cv2.COLOR_BGR2YCrCb).astype(np.float32)
+
+    corrected = gen_ycc.copy()
+    for channel in (1, 2):  # Cr, Cb
+        src_vals = src_ycc[..., channel][mask]
+        gen_vals = gen_ycc[..., channel][mask]
+        src_mean, src_std = float(src_vals.mean()), float(src_vals.std() + 1e-6)
+        gen_mean, gen_std = float(gen_vals.mean()), float(gen_vals.std() + 1e-6)
+        corrected[..., channel] = (gen_ycc[..., channel] - gen_mean) * (src_std / gen_std) + src_mean
+
+    corrected = np.clip(corrected, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(corrected, cv2.COLOR_YCrCb2BGR)
 
 
 def _fallback_blend(
@@ -173,8 +199,8 @@ def _fallback_blend(
     generated_crop: np.ndarray,
     bbox: tuple[int, int, int, int],
 ) -> np.ndarray:
-    """Blend a generated face crop onto the original frame using a very soft
-    alpha mask so the blend boundary is completely invisible."""
+    """Blend generated mouth motion into the source frame with soft alpha and
+    local chroma correction to avoid blue tint and harsh dissolving."""
     out = original.copy()
     x1, y1, x2, y2 = bbox
     bh, bw = y2 - y1, x2 - x1
@@ -187,7 +213,8 @@ def _fallback_blend(
     alpha = _make_lip_alpha_mask(bh, bw)                # float32 [0,1]
     alpha3 = np.stack([alpha, alpha, alpha], axis=-1)
     src = original[y1:y2, x1:x2].astype(np.float32)
-    gen = roi_gen.astype(np.float32)
+    gen_corr = _match_chroma_to_source(original[y1:y2, x1:x2], roi_gen, alpha)
+    gen = gen_corr.astype(np.float32)
     blended = (gen * alpha3 + src * (1.0 - alpha3)).clip(0, 255).astype(np.uint8)
     out[y1:y2, x1:x2] = blended
     return out
