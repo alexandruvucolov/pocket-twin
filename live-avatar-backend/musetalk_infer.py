@@ -150,28 +150,15 @@ def _detect_lip_bbox_opencv(
 def _make_lip_alpha_mask(
     crop_h: int, crop_w: int,
 ) -> np.ndarray:
-    """Soft elliptical mask at the mouth area of a full-face crop.
-
-    Uses a two-layer approach:
-    - Inner ellipse blurred with 31px Gaussian for a smooth invisible edge
-    - Hard outer boundary (1.4x larger) prevents any VAE color bleed
-      reaching regions of the frame that should be untouched.
-    """
+    """Simple soft elliptical mask at the mouth area of a full-face crop."""
+    mask = np.zeros((crop_h, crop_w), dtype=np.float32)
     cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    rx = int(crop_w * 0.35)
-    ry = int(crop_h * 0.16)
-
-    # Inner soft ellipse
-    inner = np.zeros((crop_h, crop_w), dtype=np.float32)
-    cv2.ellipse(inner, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    inner = cv2.GaussianBlur(inner, (31, 31), 0)
-
-    # Hard outer clipping boundary — nothing beyond 1.4x ellipse is blended
-    outer = np.zeros((crop_h, crop_w), dtype=np.float32)
-    cv2.ellipse(outer, (cx, cy), (int(rx * 1.4), int(ry * 1.4)), 0, 0, 360, 1.0, -1)
-
-    return (inner * outer).astype(np.float32)
+    rx = int(crop_w * 0.32)
+    ry = int(crop_h * 0.14)
+    cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
+    mask = cv2.GaussianBlur(mask, (31, 31), 0)
+    return mask
 
 
 def _fallback_blend(
