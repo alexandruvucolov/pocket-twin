@@ -315,6 +315,7 @@ export default function ChatScreen() {
         const audioResult = await speakLiveAvatarText({
           sessionId: session.sessionId,
           text,
+          voiceId: avatar?.voiceId,
         });
         // Play audio returned from the backend — same bytes used for MuseTalk,
         // so there is exactly one ElevenLabs call per message.

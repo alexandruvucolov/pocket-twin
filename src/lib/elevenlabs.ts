@@ -10,7 +10,8 @@ const DEFAULT_VOICE_ID = (
 ).trim();
 
 function bytesToBase64(bytes: Uint8Array): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   let out = "";
 
   for (let i = 0; i < bytes.length; i += 3) {

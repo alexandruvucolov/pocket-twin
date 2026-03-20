@@ -295,6 +295,8 @@ class PlaceholderTrack(VideoStreamTrack):
         self._musetalk_pending_text: str | None = None
         # Pre-fetched audio bytes for the pending text (avoids a second ElevenLabs call)
         self._musetalk_pending_audio: bytes | None = None
+        # Voice ID override for the pending text
+        self._musetalk_pending_voice_id: str | None = None
         # Per-session MuseTalk avatar preparation cache (set lazily on first speak)
         self._musetalk_prep = None
         # Background asyncio Task that runs prepare_avatar eagerly at session
@@ -923,10 +925,17 @@ class PlaceholderTrack(VideoStreamTrack):
                 logger.info("MuseTalk recv: SERVING frames (total=%d, fps=%d, %.1fs video)",
                             total, self._musetalk_fps, total / max(self._musetalk_fps, 1))
                 self._musetalk_frame_idx_logged = 0
-            # Clear the queue once the last frame is reached
+            # Clear the queue once the last frame is reached.
+            # If synthesis is still busy (next message being processed), loop
+            # the frames so lips keep moving instead of snapping back to idle.
             if idx >= total - 1:
-                self._musetalk_frames = []
-                logger.info("MuseTalk recv: frame queue exhausted after %.1fs", elapsed)
+                if self._musetalk_busy:
+                    # Loop: reset start time so frames replay from beginning
+                    self._musetalk_frame_start = time.monotonic()
+                    self._musetalk_frame_idx_logged = 0
+                else:
+                    self._musetalk_frames = []
+                    logger.info("MuseTalk recv: frame queue exhausted after %.1fs", elapsed)
             # Still apply blink on top of MuseTalk frames
             blink = self._blink_amount(now)
             if blink > 0.01:

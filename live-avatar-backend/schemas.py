@@ -30,3 +30,4 @@ class IceBody(BaseModel):
 
 class SpeakBody(BaseModel):
     text: str
+    voiceId: str | None = None  # Per-avatar ElevenLabs voice ID; overrides server default if set

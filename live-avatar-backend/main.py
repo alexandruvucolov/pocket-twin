@@ -585,6 +585,9 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("Audio2Face speak sync failed for %s: %s", session_id, exc)
 
+    # Use per-request voiceId if provided, otherwise fall back to server default
+    effective_voice_id = (body.voiceId or "").strip() or _ELEVENLABS_VOICE_ID
+
     # ── MuseTalk: fetch TTS audio synchronously so we can return it to the client
     # for immediate playback, then reuse the same bytes for lip-sync synthesis.
     audio_base64: str | None = None
@@ -594,7 +597,7 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    f"https://api.elevenlabs.io/v1/text-to-speech/{_ELEVENLABS_VOICE_ID}",
+                    f"https://api.elevenlabs.io/v1/text-to-speech/{effective_voice_id}",
                     headers={"xi-api-key": _ELEVENLABS_API_KEY, "Content-Type": "application/json"},
                     json={
                         "text": body.text,
@@ -612,13 +615,15 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, Any]:
         if track._musetalk_busy:
             track._musetalk_pending_text = body.text
             track._musetalk_pending_audio = audio_bytes
+            track._musetalk_pending_voice_id = effective_voice_id
             logger.info("MuseTalk: synthesis busy, queued text+audio for session %s", session_id)
         else:
             track._musetalk_busy = True
             track._musetalk_pending_text = None
             track._musetalk_pending_audio = None
+            track._musetalk_pending_voice_id = None
             asyncio.create_task(
-                _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID, audio_bytes=audio_bytes)
+                _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, effective_voice_id, audio_bytes=audio_bytes)
             )
     elif _MUSETALK_ENABLED:
         logger.warning(
@@ -779,12 +784,14 @@ async def _musetalk_speak(
         # going idle — this ensures every conversation turn eventually renders.
         pending_text = track._musetalk_pending_text
         pending_audio = track._musetalk_pending_audio
+        pending_voice = track._musetalk_pending_voice_id or voice_id
         if pending_text:
             track._musetalk_pending_text = None
             track._musetalk_pending_audio = None
+            track._musetalk_pending_voice_id = None
             logger.info("MuseTalk: chaining synthesis for pending text (len=%d)", len(pending_text))
             asyncio.create_task(
-                _musetalk_speak(track, pending_text, api_key, voice_id, audio_bytes=pending_audio)
+                _musetalk_speak(track, pending_text, api_key, pending_voice, audio_bytes=pending_audio)
             )
         else:
             track._musetalk_busy = False

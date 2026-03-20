@@ -164,6 +164,7 @@ export interface LiveAvatarSpeakResult {
 export async function speakLiveAvatarText(params: {
   sessionId: string;
   text: string;
+  voiceId?: string;
 }): Promise<LiveAvatarSpeakResult> {
   const baseUrl = getRequiredBaseUrl();
   const res = await fetch(
@@ -171,7 +172,7 @@ export async function speakLiveAvatarText(params: {
     {
       method: "POST",
       headers: getHeaders(),
-      body: JSON.stringify({ text: params.text }),
+      body: JSON.stringify({ text: params.text, voiceId: params.voiceId }),
     },
   );
 

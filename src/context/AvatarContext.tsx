@@ -82,6 +82,7 @@ function mapAvatar(id: string, value: Record<string, unknown>): Avatar {
     name: typeof value.name === "string" ? value.name : "Untitled Avatar",
     imageUri: typeof value.imageUri === "string" ? value.imageUri : "",
     videoUrl: typeof value.videoUrl === "string" ? value.videoUrl : undefined,
+    voiceId: typeof value.voiceId === "string" && value.voiceId ? value.voiceId : undefined,
     createdAt: toDate(value.createdAt) ?? new Date(),
     lastChatAt: toDate(value.lastChatAt),
     messageCount:
@@ -189,6 +190,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
       name: avatar.name,
       imageUri: avatar.imageUri,
       videoUrl: avatar.videoUrl ?? null,
+      voiceId: avatar.voiceId ?? null,
       createdAt: avatar.createdAt.getTime(),
       lastChatAt: avatar.lastChatAt?.getTime() ?? null,
       messageCount: avatar.messageCount,

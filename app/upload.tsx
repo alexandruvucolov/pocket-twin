@@ -48,6 +48,7 @@ export default function UploadScreen() {
   const [step, setStep] = useState<Step>("pick");
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [avatarName, setAvatarName] = useState("");
+  const [voiceId, setVoiceId] = useState("");
   const [progress, setProgress] = useState(0);
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<"front" | "back">("front");
@@ -216,6 +217,7 @@ export default function UploadScreen() {
       addAvatar({
         id: avatarId,
         name: avatarName.trim(),
+        voiceId: voiceId.trim() || undefined,
         imageUri: finalImageUri,
         videoUrl: resultVideoUrl,
         createdAt: new Date(),
@@ -403,6 +405,19 @@ export default function UploadScreen() {
                 onChangeText={setAvatarName}
                 maxLength={24}
                 autoFocus
+              />
+            </View>
+
+            <View style={styles.nameField}>
+              <Text style={styles.nameLabel}>ElevenLabs Voice ID (optional)</Text>
+              <TextInput
+                style={styles.nameInput}
+                placeholder="e.g. PIGsltMj3gFMR34aFDI3"
+                placeholderTextColor={Colors.textMuted}
+                value={voiceId}
+                onChangeText={setVoiceId}
+                autoCapitalize="none"
+                autoCorrect={false}
               />
             </View>
 

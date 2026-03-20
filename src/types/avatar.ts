@@ -9,6 +9,7 @@ export interface Avatar {
   name: string;
   imageUri: string;
   videoUrl?: string;
+  voiceId?: string;
   createdAt: Date;
   lastChatAt?: Date;
   messageCount: number;
