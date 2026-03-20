@@ -884,8 +884,12 @@ class PlaceholderTrack(VideoStreamTrack):
         offset_y = max(0, min(offset_y, max_y))
         image = scaled[offset_y : offset_y + 512, offset_x : offset_x + 512].copy()
 
-        # TPS mouth warp disabled — MuseTalk handles all lip sync.
-        # Keeping blink only.
+        # Skip TPS mouth warp only while MuseTalk is synthesising frames —
+        # during that window the ellipse blend boundary is visible. Once
+        # MuseTalk frames start playing they replace the frame entirely anyway.
+        # When idle (no synthesis running) TPS warp provides normal mouth animation.
+        if not self._musetalk_busy:
+            image = self._apply_mouth_warp(image, mouth_open)
         blink = self._blink_amount(now)
         if blink > 0.01:
             image = self._apply_blink(image, blink)
