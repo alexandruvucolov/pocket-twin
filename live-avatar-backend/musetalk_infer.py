@@ -150,14 +150,21 @@ def _detect_lip_bbox_opencv(
 def _make_lip_alpha_mask(
     crop_h: int, crop_w: int,
 ) -> np.ndarray:
-    """Simple soft elliptical mask at the mouth area of a full-face crop."""
+    """Tight mouth-only mask for fallback blending.
+
+    Keeps lip movement but avoids dissolving cheeks/chin by using:
+    - a smaller ellipse around the mouth
+    - moderate blur
+    - a steeper edge falloff
+    """
     mask = np.zeros((crop_h, crop_w), dtype=np.float32)
     cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    rx = int(crop_w * 0.32)
-    ry = int(crop_h * 0.14)
+    rx = int(crop_w * 0.28)
+    ry = int(crop_h * 0.12)
     cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    mask = cv2.GaussianBlur(mask, (31, 31), 0)
+    mask = cv2.GaussianBlur(mask, (17, 17), 0)
+    mask = np.power(mask, 1.35).astype(np.float32)
     return mask
 
 
