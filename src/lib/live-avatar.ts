@@ -155,10 +155,16 @@ export async function submitLiveAvatarIceCandidate(params: {
   );
 }
 
+export interface LiveAvatarSpeakResult {
+  /** Base64-encoded MP3 audio from the backend (same bytes used for MuseTalk). */
+  audioBase64?: string;
+  audioMimeType?: string;
+}
+
 export async function speakLiveAvatarText(params: {
   sessionId: string;
   text: string;
-}): Promise<void> {
+}): Promise<LiveAvatarSpeakResult> {
   const baseUrl = getRequiredBaseUrl();
   const res = await fetch(
     `${baseUrl}/api/live-avatar/sessions/${params.sessionId}/speak`,
@@ -169,10 +175,12 @@ export async function speakLiveAvatarText(params: {
     },
   );
 
-  await parseJson<Record<string, never> | { ok: boolean }>(
-    res,
-    "Live avatar speak request failed",
-  );
+  const data = await parseJson<{
+    ok: boolean;
+    audioBase64?: string;
+    audioMimeType?: string;
+  }>(res, "Live avatar speak request failed");
+  return { audioBase64: data.audioBase64, audioMimeType: data.audioMimeType };
 }
 
 export async function deleteLiveAvatarSession(params: {

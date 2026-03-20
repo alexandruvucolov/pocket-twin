@@ -293,6 +293,8 @@ class PlaceholderTrack(VideoStreamTrack):
         # finishes it checks this field and immediately chains the next run so
         # no message is permanently dropped (only the LATEST queued text wins).
         self._musetalk_pending_text: str | None = None
+        # Pre-fetched audio bytes for the pending text (avoids a second ElevenLabs call)
+        self._musetalk_pending_audio: bytes | None = None
         # Per-session MuseTalk avatar preparation cache (set lazily on first speak)
         self._musetalk_prep = None
         # Background asyncio Task that runs prepare_avatar eagerly at session

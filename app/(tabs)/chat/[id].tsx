@@ -312,13 +312,38 @@ export default function ChatScreen() {
 
       lastSpokenTextRef.current = text;
       try {
-        await Promise.all([
-          speakLiveAvatarText({
-            sessionId: session.sessionId,
-            text,
-          }),
-          playLiveBackendAudio(text),
-        ]);
+        const audioResult = await speakLiveAvatarText({
+          sessionId: session.sessionId,
+          text,
+        });
+        // Play audio returned from the backend — same bytes used for MuseTalk,
+        // so there is exactly one ElevenLabs call per message.
+        if (audioResult.audioBase64) {
+          setIsSpeaking(true);
+          try {
+            const fileUri =
+              (FileSystem.cacheDirectory ?? "") + `tts_${Date.now()}.mp3`;
+            await FileSystem.writeAsStringAsync(
+              fileUri,
+              audioResult.audioBase64,
+              { encoding: FileSystem.EncodingType.Base64 },
+            );
+            ttsPlayer.replace({ uri: fileUri });
+            ttsPlayer.play();
+            const sub = ttsPlayer.addListener(
+              "playbackStatusUpdate",
+              (status) => {
+                if (status.didJustFinish) {
+                  setIsSpeaking(false);
+                  sub.remove();
+                }
+              },
+            );
+          } catch (audioErr) {
+            console.warn("[TTS] Failed to play backend audio:", audioErr);
+            setIsSpeaking(false);
+          }
+        }
       } catch (err) {
         // If the backend session is gone (e.g. pod was restarted), clean up the
         // stale session so the UI resets to "Offline" and the user can reconnect.
@@ -335,7 +360,7 @@ export default function ChatScreen() {
         throw err;
       }
     },
-    [disconnectLiveStream, playLiveBackendAudio],
+    [disconnectLiveStream, ttsPlayer],
   );
 
   const startLiveStream = useCallback(async () => {
@@ -382,6 +407,7 @@ export default function ChatScreen() {
           preserveEyeGaze: true,
           normalizeLips: true,
         },
+        bboxShift: -15,
       });
       liveSessionRef.current = {
         provider: "backend",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -560,7 +561,7 @@ async def submit_ice(session_id: str, body: IceBody) -> dict[str, bool | str]:
 
 
 @app.post("/api/live-avatar/sessions/{session_id}/speak")
-async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
+async def speak(session_id: str, body: SpeakBody) -> dict[str, Any]:
     _, track = get_session(session_id)
 
     # Prioritize MuseTalk visuals: when MuseTalk is enabled we avoid triggering
@@ -584,21 +585,40 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
         except Exception as exc:
             logger.warning("Audio2Face speak sync failed for %s: %s", session_id, exc)
 
-    # Launch MuseTalk synthesis in background (non-blocking).
-    # If ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID are not set, or MuseTalk is
-    # not installed, this is a no-op and TPS warp continues as before.
+    # ── MuseTalk: fetch TTS audio synchronously so we can return it to the client
+    # for immediate playback, then reuse the same bytes for lip-sync synthesis.
+    audio_base64: str | None = None
     if _MUSETALK_ENABLED and isinstance(track, PlaceholderTrack) and track.source_frame is not None:
+        import httpx  # noqa: PLC0415
+        audio_bytes: bytes | None = None
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"https://api.elevenlabs.io/v1/text-to-speech/{_ELEVENLABS_VOICE_ID}",
+                    headers={"xi-api-key": _ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+                    json={
+                        "text": body.text,
+                        "model_id": "eleven_multilingual_v2",
+                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                    },
+                )
+                resp.raise_for_status()
+                audio_bytes = resp.content
+                audio_base64 = base64.b64encode(audio_bytes).decode()
+                logger.info("MuseTalk: fetched TTS audio (%d bytes) for session %s", len(audio_bytes), session_id)
+        except Exception as exc:
+            logger.warning("MuseTalk: ElevenLabs prefetch failed: %s", exc)
+
         if track._musetalk_busy:
-            # Synthesis already running — store text so it chains immediately
-            # when the current synthesis finishes (latest message wins).
             track._musetalk_pending_text = body.text
-            logger.info("MuseTalk: synthesis busy, queued latest text for session %s", session_id)
+            track._musetalk_pending_audio = audio_bytes
+            logger.info("MuseTalk: synthesis busy, queued text+audio for session %s", session_id)
         else:
             track._musetalk_busy = True
             track._musetalk_pending_text = None
-            logger.info("MuseTalk: scheduling speak task for session %s", session_id)
+            track._musetalk_pending_audio = None
             asyncio.create_task(
-                _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID)
+                _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID, audio_bytes=audio_bytes)
             )
     elif _MUSETALK_ENABLED:
         logger.warning(
@@ -607,7 +627,11 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
             getattr(track, "source_frame", "N/A") is not None,
         )
 
-    return {"ok": True, "sessionId": session_id}
+    result: dict[str, Any] = {"ok": True, "sessionId": session_id}
+    if audio_base64:
+        result["audioBase64"] = audio_base64
+        result["audioMimeType"] = "audio/mpeg"
+    return result
 
 
 async def _musetalk_eager_prepare(track: PlaceholderTrack) -> None:
@@ -640,9 +664,13 @@ async def _musetalk_speak(
     text: str,
     api_key: str,
     voice_id: str,
+    *,
+    audio_bytes: bytes | None = None,
 ) -> None:
-    """Background task: fetch TTS audio from ElevenLabs then run MuseTalk.
+    """Background task: run MuseTalk lip-sync synthesis.
 
+    ``audio_bytes`` may be pre-fetched by the speak endpoint to avoid a
+    second ElevenLabs call. If None, this function fetches from ElevenLabs.
     On success, calls ``track.set_musetalk_frames()`` so that the next
     ``recv()`` calls serve the lip-sync'd frames instead of TPS warp.
     Silently logs and returns on any failure — the TPS fallback continues.
@@ -682,23 +710,26 @@ async def _musetalk_speak(
             logger.warning("MuseTalk: avatar preparation returned None; using TPS fallback")
             return
 
-        # ── Step 2: Fetch TTS audio from ElevenLabs ──────────────────────────
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-                headers={
-                    "xi-api-key": api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "model_id": "eleven_multilingual_v2",
-                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-                },
-            )
-            resp.raise_for_status()
-            audio_bytes = resp.content
-            logger.info("MuseTalk: ElevenLabs audio fetched (%d bytes)", len(audio_bytes))
+        # ── Step 2: TTS audio (use pre-fetched bytes if available) ───────────────
+        if audio_bytes is None:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                    headers={
+                        "xi-api-key": api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "text": text,
+                        "model_id": "eleven_multilingual_v2",
+                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                    },
+                )
+                resp.raise_for_status()
+                audio_bytes = resp.content
+                logger.info("MuseTalk: ElevenLabs audio fetched (%d bytes)", len(audio_bytes))
+        else:
+            logger.info("MuseTalk: using pre-fetched audio (%d bytes)", len(audio_bytes))
 
         # ── Step 3: Save to temp file & synthesise frames ─────────────────────
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp") as f:
@@ -746,13 +777,14 @@ async def _musetalk_speak(
         # Always check for a pending message that arrived while we were busy.
         # If one exists, immediately chain into the next synthesis instead of
         # going idle — this ensures every conversation turn eventually renders.
-        pending = track._musetalk_pending_text
-        if pending:
+        pending_text = track._musetalk_pending_text
+        pending_audio = track._musetalk_pending_audio
+        if pending_text:
             track._musetalk_pending_text = None
-            logger.info("MuseTalk: chaining synthesis for pending text (len=%d)", len(pending))
-            # busy is already True; fire the next task directly
+            track._musetalk_pending_audio = None
+            logger.info("MuseTalk: chaining synthesis for pending text (len=%d)", len(pending_text))
             asyncio.create_task(
-                _musetalk_speak(track, pending, api_key, voice_id)
+                _musetalk_speak(track, pending_text, api_key, voice_id, audio_bytes=pending_audio)
             )
         else:
             track._musetalk_busy = False
