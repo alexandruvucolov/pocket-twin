@@ -409,7 +409,9 @@ export default function UploadScreen() {
             </View>
 
             <View style={styles.nameField}>
-              <Text style={styles.nameLabel}>ElevenLabs Voice ID (optional)</Text>
+              <Text style={styles.nameLabel}>
+                ElevenLabs Voice ID (optional)
+              </Text>
               <TextInput
                 style={styles.nameInput}
                 placeholder="e.g. PIGsltMj3gFMR34aFDI3"

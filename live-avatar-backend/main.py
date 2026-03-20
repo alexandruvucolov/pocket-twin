@@ -622,9 +622,17 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, Any]:
             track._musetalk_pending_text = None
             track._musetalk_pending_audio = None
             track._musetalk_pending_voice_id = None
+            frames_ready = asyncio.Event()
             asyncio.create_task(
-                _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, effective_voice_id, audio_bytes=audio_bytes)
+                _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, effective_voice_id, audio_bytes=audio_bytes, frames_ready_event=frames_ready)
             )
+            # Wait until frames are queued before returning audio so the client
+            # starts playing audio exactly when the lip-sync frames are ready.
+            try:
+                await asyncio.wait_for(frames_ready.wait(), timeout=15.0)
+                logger.info("MuseTalk: frames ready — returning audio in sync with frames")
+            except asyncio.TimeoutError:
+                logger.warning("MuseTalk: frames_ready timed out; returning audio without sync")
     elif _MUSETALK_ENABLED:
         logger.warning(
             "MuseTalk: speak task NOT scheduled — track=%s source_frame=%s",
@@ -671,6 +679,7 @@ async def _musetalk_speak(
     voice_id: str,
     *,
     audio_bytes: bytes | None = None,
+    frames_ready_event: asyncio.Event | None = None,
 ) -> None:
     """Background task: run MuseTalk lip-sync synthesis.
 
@@ -757,6 +766,10 @@ async def _musetalk_speak(
         if frames:
             track.set_musetalk_frames(frames, fps=25)
             logger.info("MuseTalk: applied %d synthesized frames", len(frames))
+            # Signal the speak endpoint that frames are now streaming so it can
+            # return audio exactly in sync.
+            if frames_ready_event is not None:
+                frames_ready_event.set()
         else:
             reason = ""
             try:
@@ -778,6 +791,8 @@ async def _musetalk_speak(
         )
     except Exception as exc:
         logger.warning("MuseTalk: speak pipeline failed: %s", exc)
+        if frames_ready_event is not None:
+            frames_ready_event.set()  # unblock endpoint even on failure
     finally:
         # Always check for a pending message that arrived while we were busy.
         # If one exists, immediately chain into the next synthesis instead of
