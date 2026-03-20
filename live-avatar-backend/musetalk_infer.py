@@ -361,7 +361,7 @@ def _load_models() -> bool:
         whisper.requires_grad_(False)
 
         audio_processor = AudioProcessor(feature_extractor_path=whisper_dir)
-        fp = FaceParsing(left_cheek_width=40, right_cheek_width=40)
+        fp = FaceParsing(left_cheek_width=60, right_cheek_width=60)
         timesteps = torch.tensor([0], device=device)
 
         _models.update(
@@ -524,7 +524,7 @@ def prepare_avatar(
             # lower-face mask with the official 10%-of-image Gaussian blur.
             try:
                 mask, crop_box = get_image_prepare_material(
-                    frame, [x1, y1, x2, y2], fp=fp, mode="raw", expand=1.2
+                    frame, [x1, y1, x2, y2], fp=fp, mode="jaw", expand=1.5
                 )
                 mask_list_cycle.append(mask)
                 mask_coords_list_cycle.append(crop_box)
