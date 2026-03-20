@@ -289,8 +289,15 @@ class PlaceholderTrack(VideoStreamTrack):
         self._musetalk_frame_idx_logged: int = -1  # for recv() diagnostic
         # Prevent multiple concurrent synthesis tasks overwriting each other
         self._musetalk_busy: bool = False
+        # Latest text received while synthesis was in progress. When synthesis
+        # finishes it checks this field and immediately chains the next run so
+        # no message is permanently dropped (only the LATEST queued text wins).
+        self._musetalk_pending_text: str | None = None
         # Per-session MuseTalk avatar preparation cache (set lazily on first speak)
         self._musetalk_prep = None
+        # Background asyncio Task that runs prepare_avatar eagerly at session
+        # creation so the first speak() does not have to wait for it.
+        self._musetalk_prep_task = None
         # bbox_shift controls mouth openness in MuseTalk (positive = more open)
         self.bbox_shift: int = 0
 
@@ -300,7 +307,9 @@ class PlaceholderTrack(VideoStreamTrack):
         self._musetalk_frames = list(frames)  # copy so caller can't mutate
         self._musetalk_frame_start = time.monotonic()
         self._musetalk_frame_idx_logged = -1
-        self._musetalk_busy = False
+        # Note: _musetalk_busy is managed by the finally block in _musetalk_speak
+        # to avoid a race condition where a new speak() arrives between here and
+        # the finally block resetting the flag.
         logger.info("MuseTalk: queued %d frames at %d fps (%.1fs of video)",
                     len(frames), fps, len(frames) / max(fps, 1))
 

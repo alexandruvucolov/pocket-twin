@@ -481,6 +481,14 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
         "yes" if source_frame is not None else "NO",
         _MUSETALK_ENABLED,
     )
+    # Eagerly kick off avatar preparation in the background so it is ready
+    # before the first speak() call arrives (eliminates the 2-5 s GPU prep
+    # delay that was visible as "no lip movement" on the first message).
+    if _MUSETALK_ENABLED and isinstance(track, PlaceholderTrack) and track.source_frame is not None:
+        track._musetalk_prep_task = asyncio.create_task(
+            _musetalk_eager_prepare(track)
+        )
+        logger.info("MuseTalk: eager avatar prep task scheduled for session %s", session_id)
     pc.addTrack(track)
     SESSIONS[session_id] = (pc, track)
     PENDING_ICE_CANDIDATES[session_id] = []
@@ -581,9 +589,13 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
     # not installed, this is a no-op and TPS warp continues as before.
     if _MUSETALK_ENABLED and isinstance(track, PlaceholderTrack) and track.source_frame is not None:
         if track._musetalk_busy:
-            logger.info("MuseTalk: skipping speak task (synthesis already in progress)")
+            # Synthesis already running — store text so it chains immediately
+            # when the current synthesis finishes (latest message wins).
+            track._musetalk_pending_text = body.text
+            logger.info("MuseTalk: synthesis busy, queued latest text for session %s", session_id)
         else:
             track._musetalk_busy = True
+            track._musetalk_pending_text = None
             logger.info("MuseTalk: scheduling speak task for session %s", session_id)
             asyncio.create_task(
                 _musetalk_speak(track, body.text, _ELEVENLABS_API_KEY, _ELEVENLABS_VOICE_ID)
@@ -596,6 +608,31 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, bool | str]:
         )
 
     return {"ok": True, "sessionId": session_id}
+
+
+async def _musetalk_eager_prepare(track: PlaceholderTrack) -> None:
+    """Run prepare_avatar in the background at session creation time.
+
+    Stores the result in ``track._musetalk_prep`` so the first speak() call
+    can skip the 2-5 s GPU preparation step entirely.
+    """
+    import musetalk_infer  # noqa: PLC0415
+    try:
+        logger.info("MuseTalk: eager avatar prep starting for track %s (bbox_shift=%d)", id(track), track.bbox_shift)
+        prep = await asyncio.to_thread(
+            musetalk_infer.prepare_avatar,
+            track.source_frame,
+            f"avatar_{id(track)}",
+            "/tmp/musetalk_avatars",
+            track.bbox_shift,
+        )
+        track._musetalk_prep = prep
+        if prep is not None:
+            logger.info("MuseTalk: eager avatar prep done for track %s", id(track))
+        else:
+            logger.warning("MuseTalk: eager avatar prep returned None for track %s", id(track))
+    except Exception as exc:
+        logger.warning("MuseTalk: eager avatar prep failed for track %s: %s", id(track), exc)
 
 
 async def _musetalk_speak(
@@ -616,16 +653,29 @@ async def _musetalk_speak(
     try:
         logger.info("MuseTalk: speak pipeline started")
 
-        # ── Step 1: Ensure avatar preparation is done (cached after first call) ──
+        # ── Step 1: Ensure avatar preparation is done ────────────────────────
+        # Normally the eager prep task fired at session creation has already
+        # finished by the time the first speak() arrives.  If it is still
+        # running (e.g. first message sent very quickly), await it here
+        # instead of launching a second redundant prepare_avatar() call.
         if track._musetalk_prep is None:
-            logger.info("MuseTalk: running avatar preparation for track %s (bbox_shift=%d)", id(track), track.bbox_shift)
-            track._musetalk_prep = await asyncio.to_thread(
-                musetalk_infer.prepare_avatar,
-                track.source_frame,
-                f"avatar_{id(track)}",
-                "/tmp/musetalk_avatars",
-                track.bbox_shift,
-            )
+            prep_task = track._musetalk_prep_task
+            if prep_task is not None and not prep_task.done():
+                logger.info("MuseTalk: waiting for background avatar prep to finish...")
+                try:
+                    await asyncio.wait_for(asyncio.shield(prep_task), timeout=30.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    logger.warning("MuseTalk: timed out waiting for eager prep task")
+            # If prep task failed or was never started, fall back to inline prep
+            if track._musetalk_prep is None:
+                logger.info("MuseTalk: running inline avatar prep for track %s (bbox_shift=%d)", id(track), track.bbox_shift)
+                track._musetalk_prep = await asyncio.to_thread(
+                    musetalk_infer.prepare_avatar,
+                    track.source_frame,
+                    f"avatar_{id(track)}",
+                    "/tmp/musetalk_avatars",
+                    track.bbox_shift,
+                )
 
         if track._musetalk_prep is None:
             # MuseTalk unavailable or no face found — TPS warp continues
@@ -672,35 +722,40 @@ async def _musetalk_speak(
             track.set_musetalk_frames(frames, fps=25)
             logger.info("MuseTalk: applied %d synthesized frames", len(frames))
         else:
-            track._musetalk_busy = False  # release lock on failure
             reason = ""
             try:
                 reason = str(musetalk_infer.get_last_synthesize_reason() or "")
             except Exception:
                 reason = ""
-            if reason:
-                logger.warning(
-                    "MuseTalk returned no frames for session (%s); TPS warp active",
-                    reason,
-                )
-            else:
-                logger.warning("MuseTalk returned no frames for session; TPS warp active")
+            logger.warning("MuseTalk returned no frames (%s); TPS warp active", reason or "unknown")
 
     except httpx.HTTPStatusError as exc:
-        body = ""
+        body_text = ""
         try:
-            body = exc.response.text[:240]
+            body_text = exc.response.text[:240]
         except Exception:
-            body = ""
+            body_text = ""
         logger.warning(
             "MuseTalk: ElevenLabs request failed (%s): %s",
             exc.response.status_code if exc.response is not None else "unknown",
-            body or str(exc),
+            body_text or str(exc),
         )
-        track._musetalk_busy = False
     except Exception as exc:
         logger.warning("MuseTalk: speak pipeline failed: %s", exc)
-        track._musetalk_busy = False
+    finally:
+        # Always check for a pending message that arrived while we were busy.
+        # If one exists, immediately chain into the next synthesis instead of
+        # going idle — this ensures every conversation turn eventually renders.
+        pending = track._musetalk_pending_text
+        if pending:
+            track._musetalk_pending_text = None
+            logger.info("MuseTalk: chaining synthesis for pending text (len=%d)", len(pending))
+            # busy is already True; fire the next task directly
+            asyncio.create_task(
+                _musetalk_speak(track, pending, api_key, voice_id)
+            )
+        else:
+            track._musetalk_busy = False
 
 
 @app.delete("/api/live-avatar/sessions/{session_id}")
