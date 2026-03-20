@@ -150,19 +150,28 @@ def _detect_lip_bbox_opencv(
 def _make_lip_alpha_mask(
     crop_h: int, crop_w: int,
 ) -> np.ndarray:
-    """Soft elliptical mask centred on the mouth within a full-face crop.
-    Very large blur (61px) spreads the edge over ~30px so no ring is visible.
+    """Soft elliptical mask at the mouth area of a full-face crop.
+
+    Uses a two-layer approach:
+    - Inner ellipse blurred with 31px Gaussian for a smooth invisible edge
+    - Hard outer boundary (1.4x larger) prevents any VAE color bleed
+      reaching regions of the frame that should be untouched.
     """
-    mask = np.zeros((crop_h, crop_w), dtype=np.float32)
     cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    # Slightly larger ellipse so the actual lip pixels are fully covered
     rx = int(crop_w * 0.35)
     ry = int(crop_h * 0.16)
-    cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    # Very wide feather — eliminates any visible boundary ring
-    mask = cv2.GaussianBlur(mask, (61, 61), 0)
-    return mask
+
+    # Inner soft ellipse
+    inner = np.zeros((crop_h, crop_w), dtype=np.float32)
+    cv2.ellipse(inner, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
+    inner = cv2.GaussianBlur(inner, (31, 31), 0)
+
+    # Hard outer clipping boundary — nothing beyond 1.4x ellipse is blended
+    outer = np.zeros((crop_h, crop_w), dtype=np.float32)
+    cv2.ellipse(outer, (cx, cy), (int(rx * 1.4), int(ry * 1.4)), 0, 0, 360, 1.0, -1)
+
+    return (inner * outer).astype(np.float32)
 
 
 def _fallback_blend(
@@ -402,7 +411,9 @@ def prepare_avatar(
             y2 = min(y2 + extra_margin, frame.shape[0])
             crop = cv2.resize(frame[y1:y2, x1:x2], (256, 256),
                               interpolation=cv2.INTER_LANCZOS4)
-            input_latent_list.append(vae.get_latents_for_unet(crop))
+            # MuseTalk VAE expects RGB — convert from OpenCV BGR
+            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            input_latent_list.append(vae.get_latents_for_unet(crop_rgb))
 
         if not input_latent_list:
             logger.warning("MuseTalk: no face detected in source frame (%s)", avatar_id)
