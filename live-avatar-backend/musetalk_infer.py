@@ -704,8 +704,7 @@ def synthesize(
                 # Fallback path — use our custom elliptical lip mask/blender
                 combined.append(_fallback_blend(ori, res_frame, bbox))
             else:
-                alpha_blended = get_image_blending(ori, res_frame, bbox, mask, mcb)
-                combined.append(_poisson_blend_refinement(alpha_blended, ori, mask, mcb))
+                combined.append(get_image_blending(ori, res_frame, bbox, mask, mcb))
 
         logger.info(
             "MuseTalk synthesized %d frames in %.2fs",
