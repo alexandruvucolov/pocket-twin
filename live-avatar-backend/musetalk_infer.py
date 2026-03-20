@@ -150,20 +150,18 @@ def _detect_lip_bbox_opencv(
 def _make_lip_alpha_mask(
     crop_h: int, crop_w: int,
 ) -> np.ndarray:
-    """Create a float32 [0,1] elliptical mask for the MOUTH region within a
-    full-face crop.  In a frontal face, the mouth sits at ~65-80% of the face
-    height.  We centre the ellipse there so only the mouth area gets blended.
+    """Create a float32 [0,1] elliptical mask for the mouth region within a
+    full-face crop. Used as the seamlessClone source mask — solid white inside
+    the mouth ellipse with a small feather at the edge.
     """
     mask = np.zeros((crop_h, crop_w), dtype=np.float32)
-    # Mouth centre at ~72% of face height, horizontally centred
     cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    # Ellipse: ~50% of face width, ~18% of face height
-    rx = int(crop_w * 0.28)
-    ry = int(crop_h * 0.12)
+    rx = int(crop_w * 0.32)
+    ry = int(crop_h * 0.14)
     cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    # Smooth blend edge ~15px
-    mask = cv2.GaussianBlur(mask, (21, 21), 0)
+    # Light feather so seamlessClone edge blends cleanly
+    mask = cv2.GaussianBlur(mask, (11, 11), 0)
     return mask
 
 
@@ -172,22 +170,38 @@ def _fallback_blend(
     generated_crop: np.ndarray,
     bbox: tuple[int, int, int, int],
 ) -> np.ndarray:
-    """Blend a generated mouth crop onto the original frame using a custom
-    elliptical lip mask — bypasses get_image_prepare_material/FaceParsing
-    entirely for the fallback path, which avoids the dissolve artefact."""
+    """Blend a generated face crop onto the original frame using seamlessClone
+    so there is no visible ring or edge artifact at the blend boundary."""
     out = original.copy()
     x1, y1, x2, y2 = bbox
     bh, bw = y2 - y1, x2 - x1
     if bh <= 0 or bw <= 0:
         return out
+
     roi_gen = cv2.resize(generated_crop.astype(np.uint8), (bw, bh),
                          interpolation=cv2.INTER_LANCZOS4)
-    alpha = _make_lip_alpha_mask(bh, bw)                # (bh, bw) float32
-    alpha3 = np.stack([alpha, alpha, alpha], axis=-1)   # broadcast over RGB
-    src = original[y1:y2, x1:x2].astype(np.float32)
-    gen = roi_gen.astype(np.float32)
-    blended = (gen * alpha3 + src * (1.0 - alpha3)).clip(0, 255).astype(np.uint8)
-    out[y1:y2, x1:x2] = blended
+
+    # Build a mask: white ellipse covering the mouth region, black elsewhere.
+    # seamlessClone uses this to decide which pixels to blend.
+    mask = _make_lip_alpha_mask(bh, bw)          # float32 [0,1]
+    mask_u8 = (mask * 255).astype(np.uint8)      # uint8 [0,255]
+
+    # Center of the bbox in the destination (original) frame
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+
+    try:
+        out = cv2.seamlessClone(
+            roi_gen, out, mask_u8, (cx, cy), cv2.MIXED_CLONE
+        )
+    except cv2.error:
+        # Fallback to simple alpha blend if seamlessClone fails (e.g. bbox near border)
+        alpha3 = np.stack([mask, mask, mask], axis=-1)
+        src = original[y1:y2, x1:x2].astype(np.float32)
+        blended = (roi_gen.astype(np.float32) * alpha3
+                   + src * (1.0 - alpha3)).clip(0, 255).astype(np.uint8)
+        out[y1:y2, x1:x2] = blended
+
     return out
 
 
