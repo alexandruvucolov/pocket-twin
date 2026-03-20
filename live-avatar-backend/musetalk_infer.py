@@ -158,10 +158,11 @@ def _make_lip_alpha_mask(
     mask = np.zeros((crop_h, crop_w), dtype=np.float32)
     cy = int(crop_h * 0.72)
     cx = int(crop_w * 0.50)
-    rx = int(crop_w * 0.32)
-    ry = int(crop_h * 0.14)
+    rx = int(crop_w * 0.24)
+    ry = int(crop_h * 0.10)
     cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
-    mask = cv2.GaussianBlur(mask, (31, 31), 0)
+    mask = cv2.GaussianBlur(mask, (11, 11), 0)
+    mask = np.power(mask, 1.2).astype(np.float32)
     return mask
 
 
@@ -216,6 +217,14 @@ def _fallback_blend(
     gen_corr = _match_chroma_to_source(original[y1:y2, x1:x2], roi_gen, alpha)
     gen = gen_corr.astype(np.float32)
     blended = (gen * alpha3 + src * (1.0 - alpha3)).clip(0, 255).astype(np.uint8)
+
+    # Preserve original skin texture near blend boundary to avoid perceived blur.
+    edge = np.clip((alpha - 0.55) / 0.45, 0.0, 1.0).astype(np.float32)
+    edge3 = np.stack([edge, edge, edge], axis=-1)
+    blended = (
+        blended.astype(np.float32) * edge3
+        + original[y1:y2, x1:x2].astype(np.float32) * (1.0 - edge3)
+    ).clip(0, 255).astype(np.uint8)
     out[y1:y2, x1:x2] = blended
     return out
 
