@@ -53,6 +53,29 @@ const VOICE_TRANSCRIPT_BUBBLE_HEIGHT = 84;
 const CHAT_OVERLAP = 96;
 // Local phone TTS can be memory-heavy on some devices and cause white-screen
 // crashes. Keep disabled by default; enable explicitly if needed.
+
+// Whisper frequently hallucinates these phrases when the input is silent or
+// contains only background noise. Discard transcripts that exactly match.
+const WHISPER_HALLUCINATIONS = new Set([
+  "you",
+  "you.",
+  "thank you",
+  "thank you.",
+  "thanks",
+  "thanks.",
+  "thanks for watching",
+  "thanks for watching.",
+  "thank you for watching",
+  "thank you for watching.",
+  "thank you so much",
+  "thank you so much.",
+  "bye",
+  "bye.",
+  "okay",
+  "okay.",
+  "...",
+  "…",
+]);
 const ENABLE_LOCAL_PHONE_TTS =
   (process.env.EXPO_PUBLIC_ENABLE_LOCAL_PHONE_TTS ?? "false")
     .trim()
@@ -1038,6 +1061,18 @@ export default function ChatScreen() {
       }
       lastRecordingFingerprintRef.current = recordingFingerprint;
 
+      // Guard: metering was working but the user never crossed the speech
+      // threshold → the recording is silence. Skip Whisper entirely; it will
+      // only hallucinate random words if we send it.
+      if (meterEventsSeenRef.current && !speechDetectedRef.current) {
+        console.log(
+          "[Voice] no speech detected above threshold – skipping Whisper",
+        );
+        setIsTranscribing(false);
+        shouldRestartListening = isVoiceSessionActive(sessionId);
+        return;
+      }
+
       const transcript = await Promise.race<string>([
         transcribeAudio(uri),
         new Promise<string>((_, reject) =>
@@ -1053,6 +1088,16 @@ export default function ChatScreen() {
       setIsTranscribing(false);
       if (!transcript || !isVoiceSessionActive(sessionId)) {
         // Nothing useful was said — listen again
+        shouldRestartListening = isVoiceSessionActive(sessionId);
+        return;
+      }
+
+      // Hallucination filter: Whisper returns these phrases on silence/noise.
+      if (WHISPER_HALLUCINATIONS.has(transcript.toLowerCase().trim())) {
+        console.log(
+          "[Voice] discarding Whisper hallucination:",
+          JSON.stringify(transcript),
+        );
         shouldRestartListening = isVoiceSessionActive(sessionId);
         return;
       }
