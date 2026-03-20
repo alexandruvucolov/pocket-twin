@@ -524,8 +524,7 @@ def prepare_avatar(
             # lower-face mask with the official 10%-of-image Gaussian blur.
             try:
                 mask, crop_box = get_image_prepare_material(
-                    frame, [x1, y1, x2, y2], fp=fp, mode="jaw",
-                    upper_boundary_ratio=0.75,
+                    frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
                 )
                 mask_list_cycle.append(mask)
                 mask_coords_list_cycle.append(crop_box)
