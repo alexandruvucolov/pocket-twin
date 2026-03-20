@@ -1,80 +1,118 @@
-# Runpod start commands
+# RunPod Start Commands
 
-These commands are tailored for the current Pocket Twin Runpod layout:
+## Fresh pod — first-time setup
 
-- repo: `/workspace/pocket-twin`
-- backend public URL: `https://ukwj8sd7k5tutx-8000.proxy.runpod.net`
+Run once after creating a new pod (GPU with MuseTalk/CUDA support).
 
-## 1. Prepare backend env
-
-Backend env file:
-
-- [live-avatar-backend/.env](live-avatar-backend/.env)
-
-Fill these before start:
-
-- `LIVE_AVATAR_RUNPOD_API_KEY`
-- `LIVE_AVATAR_RUNPOD_LIVEPORTRAIT_ENDPOINT_ID`
-- TURN values if needed
-
-## 2. Start Audio2Face adapter
-
-From the pod:
+### 1. Clone repo & create .env
 
 ```bash
-cd /workspace/pocket-twin/live-avatar-a2f-adapter
-chmod +x start_runpod_adapter.sh
-./start_runpod_adapter.sh
+cd /workspace
+git clone https://github.com/alexandruvucolov/pocket-twin.git
+cd pocket-twin/live-avatar-backend
+nano .env
 ```
 
-Adapter port:
-- `8010`
+Required `.env` values:
 
-## 3. Start live avatar backend
+```dotenv
+ELEVENLABS_API_KEY=sk-...
+ELEVENLABS_VOICE_ID=...          # default fallback voice
+OPENAI_API_KEY=sk-...
+LIVE_AVATAR_RUNPOD_API_KEY=...   # only if using RunPod LivePortrait
+LIVE_AVATAR_RUNPOD_LIVEPORTRAIT_ENDPOINT_ID=...
+```
 
-From another shell:
+### 2. Create virtualenv & install deps
 
 ```bash
 cd /workspace/pocket-twin/live-avatar-backend
-chmod +x start_runpod_backend.sh
-./start_runpod_backend.sh
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Backend port:
-- `8000`
+---
 
-Static rendered files will be served from:
-- `https://ukwj8sd7k5tutx-8000.proxy.runpod.net/results/...`
+## Daily start (existing pod, code already set up)
 
-## 4. Run worker locally on the pod for testing
+### Kill old server, pull latest code, start fresh
 
 ```bash
-cd /workspace/pocket-twin/liveportrait-runpod-worker
-chmod +x start_local_worker.sh
-./start_local_worker.sh
+pkill -f uvicorn; pkill -f "python.*main"; sleep 2 && cd /workspace/pocket-twin && git pull && cd live-avatar-backend && source .venv/bin/activate && set -a && source .env && set +a && uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-This uses:
-- [liveportrait-runpod-worker/examples/current-runpod.exports.sh](liveportrait-runpod-worker/examples/current-runpod.exports.sh)
+Wait for this log line before using the app (~60 s):
 
-## 5. Use for Serverless env packaging
+```
+MuseTalk v1.5 models loaded on cuda
+```
 
-Use these files as the source of truth:
+Backend port: **8000**
 
-- [liveportrait-runpod-worker/examples/current-runpod.exports.sh](liveportrait-runpod-worker/examples/current-runpod.exports.sh)
-- [liveportrait-runpod-worker/examples/pocket-twin-runpod.env.example](liveportrait-runpod-worker/examples/pocket-twin-runpod.env.example)
-- [live-avatar-backend/.env](live-avatar-backend/.env)
+---
 
-For the Serverless worker entrypoint, use:
+## Update app .env after new pod
+
+Pod URL changes every new pod. Update mobile app `.env`:
+
+```
+EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL=https://<new-pod-id>-8000.proxy.runpod.net
+```
+
+Then restart Expo: `npx expo start -c`
+
+---
+
+## Notes
+
+- Never start with `python main.py` — it exits immediately. Always use `uvicorn main:app`.
+- `git reset --hard` strips execute bits. Use the direct uvicorn command above instead of shell scripts.
+- virtualenv is `.venv` (not `venv`).
+- MuseTalk models preload at startup (~60 s). Wait for the log line before testing.
+
+## Fresh pod — first-time setup
+
+Run once after creating a new pod (GPU with Mu.e
+## Fresh pod — firsn m
+Run once after creating a new p00
+
+### 1. Clone repo & create .env
 
 ```bash
-python /workspace/pocket-twin/liveportrait-runpod-worker/handler.py
+cd /workspace
+git clone sta
+```bash
+cd /workspace
+git cloloacd /wo cgit clone htkecd pocket-twin/live-avatar-backend
+nano .env
 ```
 
-## 6. App setting
+Required `
 
-Mobile app backend URL is already set to:
-
-```dotenv
-EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL=https://ukwj8sd7k5tutx-8000.proxy.runpod.net
+nano .env
 ```
+
+Required `.env` vapod. Update 
+R the mobile app `.env`:
+
+```ELEVENLAXPELEVENLABS_VOICE_ID=... KEOPENAI_API_KEY=sk-...
+LIVE_AVATAR_RUNPOD_API_KEY=...   #heLIVE_AVATAR_RUNPOD_A eLIVE_AVATAR_RUNPOD_LIVEPORTRAIT_ENDPOINT_ID=...
+```
+
+### 2. Create py```
+
+### 2. Create virtualenv & install deps
+
+).
+#lwa
+```bash
+cd /workspace/pocket-twin/livsetcd /wod`python -m venv .venv
+source .venv/bin/activasesource .venv/binpod_bpip install -r requireme u```orn command above.
+- venv is 
+- `.
+#nv`
+### Kill old server, pull latest code, start frend 
+```bash
+pkill -f uvicorn; pkill -f "python.*maince pkillog 
+## Fresh pod —s.
