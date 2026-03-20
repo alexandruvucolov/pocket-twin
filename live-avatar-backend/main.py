@@ -8,6 +8,7 @@ import os
 import ssl
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -422,7 +423,20 @@ async def _add_ice_candidate(
     )
     await pc.addIceCandidate(candidate)
 
-app = FastAPI(title="Pocket Twin Live Avatar Backend")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Pre-load MuseTalk models at server startup so the first message
+    doesn't pay the 60-90s cold-start model load penalty."""
+    if _MUSETALK_ENABLED:
+        import musetalk_infer  # noqa: PLC0415
+        logger.info("MuseTalk: pre-loading models in background...")
+        asyncio.create_task(
+            asyncio.to_thread(musetalk_infer._load_models)
+        )
+    yield
+
+
+app = FastAPI(title="Pocket Twin Live Avatar Backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -629,7 +643,7 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, Any]:
             # Wait until frames are queued before returning audio so the client
             # starts playing audio exactly when the lip-sync frames are ready.
             try:
-                await asyncio.wait_for(frames_ready.wait(), timeout=15.0)
+                await asyncio.wait_for(frames_ready.wait(), timeout=90.0)
                 logger.info("MuseTalk: frames ready — returning audio in sync with frames")
             except asyncio.TimeoutError:
                 logger.warning("MuseTalk: frames_ready timed out; returning audio without sync")
