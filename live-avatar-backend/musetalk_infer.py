@@ -27,6 +27,28 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
+def _color_match(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """Match src's per-channel mean+std to ref (LAB space, per-channel).
+
+    This corrects brightness/tone differences between the MuseTalk VAE output
+    and the original frame region, making the blending seam far less visible.
+    Both images must be BGR uint8 and the same shape.
+    """
+    if src.shape != ref.shape or src.dtype != np.uint8:
+        return src
+    src_lab = cv2.cvtColor(src, cv2.COLOR_BGR2LAB).astype(np.float32)
+    ref_lab = cv2.cvtColor(ref, cv2.COLOR_BGR2LAB).astype(np.float32)
+    for c in range(3):
+        s_mean = src_lab[:, :, c].mean()
+        s_std  = src_lab[:, :, c].std()
+        r_mean = ref_lab[:, :, c].mean()
+        r_std  = ref_lab[:, :, c].std()
+        if s_std > 1e-6:
+            src_lab[:, :, c] = (src_lab[:, :, c] - s_mean) * (r_std / s_std) + r_mean
+    return cv2.cvtColor(np.clip(src_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+
 # ---------------------------------------------------------------------------
 # Make system-installed packages (torch, mmcv, etc.) visible when the backend
 # runs inside its own .venv which does not include those heavy deps.
@@ -700,6 +722,12 @@ def synthesize(
                 continue
             mask = prep.mask_list_cycle[i % n_cycle]
             mcb  = prep.mask_coords_list_cycle[i % n_cycle]
+            # Color-correct the MuseTalk patch to match the source frame's
+            # tone/brightness before blending — eliminates the visible seam
+            # caused by the VAE output having slightly different color stats.
+            src_region = ori[y1:y2, x1:x2]
+            if src_region.shape == res_frame.shape:
+                res_frame = _color_match(res_frame, src_region)
             if mask is None:
                 # Fallback path — use our custom elliptical lip mask/blender
                 combined.append(_fallback_blend(ori, res_frame, bbox))
