@@ -301,7 +301,7 @@ def _load_models() -> bool:
         whisper.requires_grad_(False)
 
         audio_processor = AudioProcessor(feature_extractor_path=whisper_dir)
-        fp = FaceParsing(left_cheek_width=90, right_cheek_width=90)
+        fp = FaceParsing(left_cheek_width=40, right_cheek_width=40)
         timesteps = torch.tensor([0], device=device)
 
         _models.update(
@@ -341,6 +341,7 @@ def prepare_avatar(
     source_frame_bgr: np.ndarray,
     avatar_id: str,
     work_dir: str = "/tmp/musetalk_avatars",
+    bbox_shift: int = 0,
 ) -> AvatarPrep | None:
     """One-time preparation for a source portrait.
 
@@ -350,6 +351,12 @@ def prepare_avatar(
 
     Returns ``None`` if MuseTalk is unavailable or no face is detected.
     Takes ~2–5 s on first call (GPU); subsequent calls reuse cached files.
+
+    Args:
+        bbox_shift: Shift the mouth mask region vertically. Positive values
+            (e.g. +5) move toward the lower half → more mouth openness.
+            Negative values (e.g. -5) move toward the upper half → less
+            mouth openness. Typical range returned by MuseTalk is [-9, 9].
     """
     if not _load_models():
         return None
@@ -381,7 +388,7 @@ def prepare_avatar(
         if _preprocess_available is not False:
             try:
                 from musetalk.utils.preprocessing import get_landmark_and_bbox   # noqa: PLC0415
-                coord_list, frame_list = get_landmark_and_bbox([frame_path], bbox_shift=0)
+                coord_list, frame_list = get_landmark_and_bbox([frame_path], bbox_shift=bbox_shift)
                 _preprocess_available = True
             except Exception as exc:
                 _preprocess_available = False

@@ -15,6 +15,7 @@ class CreateSessionBody(BaseModel):
     livePortraitDrivingVideoUrl: str | None = None
     livePortraitMotionTemplateUrl: str | None = None
     livePortraitOptions: dict[str, Any] | None = None
+    bboxShift: int | None = None  # MuseTalk mouth openness: positive = more open, negative = less open
 
 
 class AnswerBody(BaseModel):

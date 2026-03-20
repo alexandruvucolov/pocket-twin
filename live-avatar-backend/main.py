@@ -474,6 +474,7 @@ async def create_session(body: CreateSessionBody) -> dict[str, Any]:
             track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
     else:
         track = PlaceholderTrack(body.avatarName, source_frame=source_frame)
+    track.bbox_shift = body.bboxShift if body.bboxShift is not None else 0
     logger.info(
         "Session %s: track=%s source_frame=%s musetalk_enabled=%s",
         session_id, type(track).__name__,
@@ -617,12 +618,13 @@ async def _musetalk_speak(
 
         # ── Step 1: Ensure avatar preparation is done (cached after first call) ──
         if track._musetalk_prep is None:
-            logger.info("MuseTalk: running avatar preparation for track %s", id(track))
+            logger.info("MuseTalk: running avatar preparation for track %s (bbox_shift=%d)", id(track), track.bbox_shift)
             track._musetalk_prep = await asyncio.to_thread(
                 musetalk_infer.prepare_avatar,
                 track.source_frame,
                 f"avatar_{id(track)}",
                 "/tmp/musetalk_avatars",
+                track.bbox_shift,
             )
 
         if track._musetalk_prep is None:

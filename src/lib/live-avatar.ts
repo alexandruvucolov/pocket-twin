@@ -22,6 +22,8 @@ export interface LiveAvatarSessionOptions {
   livePortraitDrivingVideoUrl?: string;
   livePortraitMotionTemplateUrl?: string;
   livePortraitOptions?: Record<string, unknown>;
+  /** MuseTalk mouth openness adjustment. Positive = more open, negative = less open. Typical range: -9 to +9. */
+  bboxShift?: number;
 }
 
 function getBackendBaseUrl() {

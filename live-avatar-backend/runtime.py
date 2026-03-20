@@ -291,6 +291,8 @@ class PlaceholderTrack(VideoStreamTrack):
         self._musetalk_busy: bool = False
         # Per-session MuseTalk avatar preparation cache (set lazily on first speak)
         self._musetalk_prep = None
+        # bbox_shift controls mouth openness in MuseTalk (positive = more open)
+        self.bbox_shift: int = 0
 
     def set_musetalk_frames(self, frames: list, fps: int = 25) -> None:
         """Store pre-rendered MuseTalk frames to be streamed via recv()."""
