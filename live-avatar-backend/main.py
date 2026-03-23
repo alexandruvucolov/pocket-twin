@@ -428,10 +428,10 @@ async def lifespan(app: FastAPI):
     """Pre-load MuseTalk models at server startup so the first message
     doesn't pay the 60-90s cold-start model load penalty."""
     if _MUSETALK_ENABLED:
-        import musetalk_infer  # noqa: PLC0415
-        logger.info("MuseTalk: pre-loading models in background...")
+        import latentsync_infer  # noqa: PLC0415
+        logger.info("LatentSync: pre-loading models in background...")
         asyncio.create_task(
-            asyncio.to_thread(musetalk_infer._load_models)
+            asyncio.to_thread(latentsync_infer._load_models)
         )
     yield
 
@@ -667,14 +667,14 @@ async def _musetalk_eager_prepare(track: PlaceholderTrack) -> None:
     Stores the result in ``track._musetalk_prep`` so the first speak() call
     can skip the 2-5 s GPU preparation step entirely.
     """
-    import musetalk_infer  # noqa: PLC0415
+    import latentsync_infer  # noqa: PLC0415
     try:
-        logger.info("MuseTalk: eager avatar prep starting for track %s (bbox_shift=%d)", id(track), track.bbox_shift)
+        logger.info("LatentSync: eager avatar prep starting for track %s (bbox_shift=%d)", id(track), track.bbox_shift)
         prep = await asyncio.to_thread(
-            musetalk_infer.prepare_avatar,
+            latentsync_infer.prepare_avatar,
             track.source_frame,
             f"avatar_{id(track)}",
-            "/tmp/musetalk_avatars",
+            "/tmp/latentsync_avatars",
             track.bbox_shift,
         )
         track._musetalk_prep = prep
@@ -704,7 +704,7 @@ async def _musetalk_speak(
     Silently logs and returns on any failure — the TPS fallback continues.
     """
     import httpx  # noqa: PLC0415
-    import musetalk_infer  # noqa: PLC0415
+    import latentsync_infer  # noqa: PLC0415
 
     try:
         logger.info("MuseTalk: speak pipeline started")
@@ -726,10 +726,10 @@ async def _musetalk_speak(
             if track._musetalk_prep is None:
                 logger.info("MuseTalk: running inline avatar prep for track %s (bbox_shift=%d)", id(track), track.bbox_shift)
                 track._musetalk_prep = await asyncio.to_thread(
-                    musetalk_infer.prepare_avatar,
+                    latentsync_infer.prepare_avatar,
                     track.source_frame,
                     f"avatar_{id(track)}",
-                    "/tmp/musetalk_avatars",
+                    "/tmp/latentsync_avatars",
                     track.bbox_shift,
                 )
 
@@ -766,7 +766,7 @@ async def _musetalk_speak(
 
         try:
             frames = await asyncio.to_thread(
-                musetalk_infer.synthesize,
+                latentsync_infer.synthesize,
                 track._musetalk_prep,
                 audio_path,
                 25,
@@ -787,7 +787,7 @@ async def _musetalk_speak(
         else:
             reason = ""
             try:
-                reason = str(musetalk_infer.get_last_synthesize_reason() or "")
+                reason = str(latentsync_infer.get_last_synthesize_reason() or "")
             except Exception:
                 reason = ""
             logger.warning("MuseTalk returned no frames (%s); TPS warp active", reason or "unknown")
