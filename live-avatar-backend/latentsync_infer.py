@@ -55,8 +55,8 @@ _models_load_lock = threading.Lock()       # prevent concurrent load attempts
 # Width / height expected by the loaded config ( set during _load_models )
 _infer_width: int = 512
 _infer_height: int = 512
-_num_frames: int = 16          # from config.data.num_frames
-_audio_feat_length: int = 2    # from config.data.audio_feat_length
+_num_frames: int = 16              # from config.data.num_frames
+_audio_feat_length: list = [2, 2]  # from config.data.audio_feat_length (must be a list)
 
 _last_synthesize_reason: str = ""
 
@@ -130,7 +130,7 @@ def _load_models() -> bool:
     Must be called from inside LATENTSYNC_DIR context (cwd) because the
     LatentSync codebase resolves 'configs/' and 'checkpoints/' relative to CWD.
     """
-    global _pipeline, _models_available, _infer_width, _infer_height
+    global _pipeline, _models_available, _infer_width, _infer_height  # type: ignore[misc]
     global _num_frames, _audio_feat_length
 
     # Fast path — already known
@@ -181,16 +181,16 @@ def _load_models() -> bool:
             _infer_width  = int(getattr(config.data, "resolution", 512))
             _infer_height = _infer_width
             _num_frames   = int(getattr(config.data, "num_frames", 16))
-            _audio_feat_length_raw = getattr(config.data, "audio_feat_length", 2)
-            # audio_feat_length may be a scalar or a ListConfig (e.g. [2, 2])
+            _audio_feat_length_raw = getattr(config.data, "audio_feat_length", [2, 2])
+            # audio_feat_length must be kept as a list — Audio2Feature does self.audio_feat_length[0]
             if hasattr(_audio_feat_length_raw, "__iter__"):
-                _audio_feat_length = int(list(_audio_feat_length_raw)[0])
+                _audio_feat_length = [int(v) for v in _audio_feat_length_raw]
             else:
-                _audio_feat_length = int(_audio_feat_length_raw)
+                _audio_feat_length = [int(_audio_feat_length_raw)]
             dtype = torch.float16
 
             logger.info(
-                "LatentSync: config loaded — resolution=%d num_frames=%d audio_feat_length=%d",
+                "LatentSync: config loaded — resolution=%d num_frames=%d audio_feat_length=%s",
                 _infer_width, _num_frames, _audio_feat_length,
             )
 
