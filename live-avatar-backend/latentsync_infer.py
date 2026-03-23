@@ -181,7 +181,12 @@ def _load_models() -> bool:
             _infer_width  = int(getattr(config.data, "resolution", 512))
             _infer_height = _infer_width
             _num_frames   = int(getattr(config.data, "num_frames", 16))
-            _audio_feat_length = int(getattr(config.data, "audio_feat_length", 2))
+            _audio_feat_length_raw = getattr(config.data, "audio_feat_length", 2)
+            # audio_feat_length may be a scalar or a ListConfig (e.g. [2, 2])
+            if hasattr(_audio_feat_length_raw, "__iter__"):
+                _audio_feat_length = int(list(_audio_feat_length_raw)[0])
+            else:
+                _audio_feat_length = int(_audio_feat_length_raw)
             dtype = torch.float16
 
             logger.info(
