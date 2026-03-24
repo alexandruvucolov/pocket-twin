@@ -1,73 +1,64 @@
 # RunPod Start Commands
 
-## Fresh pod — first-time setup
+## New pod - one command cold start (LatentSync)
 
-Run once after creating a new pod (GPU with MuseTalk/CUDA support).
-
-### 1. Clone repo & create .env
+After creating a **new** pod (RTX 4090, PyTorch 2.4 / CUDA 12.4 template):
 
 ```bash
-cd /workspace
-git clone https://github.com/alexandruvucolov/pocket-twin.git
-cd pocket-twin/live-avatar-backend
-nano .env
+curl -fsSL https://raw.githubusercontent.com/alexandruvucolov/pocket-twin/main/live-avatar-backend/start_new_pod.sh | bash
 ```
 
-Required `.env` values:
-
-```dotenv
-ELEVENLABS_API_KEY=sk-...
-ELEVENLABS_VOICE_ID=...          # default fallback voice
-OPENAI_API_KEY=sk-...
-LIVE_AVATAR_RUNPOD_API_KEY=...   # only if using RunPod LivePortrait
-LIVE_AVATAR_RUNPOD_LIVEPORTRAIT_ENDPOINT_ID=...
-```
-
-### 2. Create virtualenv & install deps
+Or if you prefer to clone first:
 
 ```bash
-cd /workspace/pocket-twin/live-avatar-backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+git clone https://github.com/alexandruvucolov/pocket-twin.git /workspace/pocket-twin
+bash /workspace/pocket-twin/live-avatar-backend/start_new_pod.sh
+```
+
+This script does **everything** automatically:
+1. Clones pocket-twin (or pulls latest)
+2. Writes `.env` with all credentials
+3. Clones LatentSync repo
+4. Installs LatentSync + ML dependencies
+5. Downloads all checkpoints (~5 GB from HuggingFace)
+6. Creates backend venv + installs requirements
+7. Starts the server on port 8000
+
+Total time on a fresh pod: ~10-15 minutes (mostly checkpoint download).
+
+---
+
+## Existing pod - restart server (everything already installed)
+
+```bash
+cd /workspace/pocket-twin && git pull && pkill -f uvicorn; sleep 1 && cd live-avatar-backend && source .venv/bin/activate && set -a && source .env && set +a && uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ---
 
-## Daily start (existing pod, code already set up)
+## Pod URL
 
-### Kill old server, pull latest code, start fresh
-
-```bash
-pkill -f uvicorn; pkill -f "python.*main"; sleep 2 && cd /workspace/pocket-twin && git pull && cd live-avatar-backend && source .venv/bin/activate && set -a && source .env && set +a && uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Wait for this log line before using the app (~60 s):
+After the server starts, the backend is available at:
 
 ```
-MuseTalk v1.5 models loaded on cuda
+https://<POD_ID>-8000.proxy.runpod.net
 ```
 
-Backend port: **8000**
+Set this in your app `.env`:
+
+```
+EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL=https://<POD_ID>-8000.proxy.runpod.net
+```
 
 ---
 
-## Update app .env after new pod
+## Credentials reference
 
-Pod URL changes every new pod. Update mobile app `.env`:
-
-```
-EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL=https://<new-pod-id>-8000.proxy.runpod.net
-```
-
-Then restart Expo: `npx expo start -c`
-
----
-
-## Notes
-
-- Never start with `python main.py` — it exits immediately. Always use `uvicorn main:app`.
-- `git reset --hard` strips execute bits. Use the direct uvicorn command above instead of shell scripts.
-- virtualenv is `.venv` (not `venv`).
-- MuseTalk models preload at startup (~60 s). Wait for the log line before testing.
-
+| Variable | Value |
+|---|---|
+| `ELEVENLABS_API_KEY` | `sk_e2c9fabaa0bbe746f5e9eacba9644d6eed7cdb7ad45a955a` |
+| `ELEVENLABS_VOICE_ID` | `PIGsltMj3gFMR34aFDI3` |
+| `LIVE_AVATAR_METERED_DOMAIN` | `pocket_twin.metered.live` |
+| `LIVE_AVATAR_METERED_API_KEY` | `480fc4fe2da0fbfa5ef46a3aaf650ca386f2` |
+| `LIVE_AVATAR_METERED_INSECURE_TLS` | `true` |
+| `LATENTSYNC_DIR` | `/workspace/LatentSync` |
