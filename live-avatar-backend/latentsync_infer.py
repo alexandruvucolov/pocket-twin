@@ -51,6 +51,7 @@ LATENTSYNC_DIR = Path(os.environ.get("LATENTSYNC_DIR", "/workspace/LatentSync"))
 _pipeline: Optional[Any] = None       # LipsyncPipeline instance
 _models_available: Optional[bool] = None   # None = not yet probed
 _models_load_lock = threading.Lock()       # prevent concurrent load attempts
+_synthesis_lock = threading.Lock()         # only one synthesis at a time (pipeline is not thread-safe)
 
 # Width / height expected by the loaded config ( set during _load_models )
 _infer_width: int = 512
@@ -364,16 +365,19 @@ def synthesize(
         os.close(tmp_fd)
 
         # ── Run LatentSync pipeline ────────────────────────────────────────
-        _pipeline(
-            video_path=prep.avatar_video_path,
-            audio_path=audio_path,
-            video_out_path=tmp_out,
-            num_inference_steps=20,
-            guidance_scale=1.5,
-            weight_dtype=torch.float16,
-            width=_infer_width,
-            height=_infer_height,
-        )
+        # Acquire lock: pipeline is a global singleton and not thread-safe.
+        # A second session calling synthesize() concurrently would corrupt both.
+        with _synthesis_lock:
+            _pipeline(
+                video_path=prep.avatar_video_path,
+                audio_path=audio_path,
+                video_out_path=tmp_out,
+                num_inference_steps=10,
+                guidance_scale=1.5,
+                weight_dtype=torch.float16,
+                width=_infer_width,
+                height=_infer_height,
+            )
 
         # ── Extract frames from output video ──────────────────────────────
         cap = cv2.VideoCapture(tmp_out)

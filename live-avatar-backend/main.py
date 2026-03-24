@@ -630,7 +630,16 @@ async def speak(session_id: str, body: SpeakBody) -> dict[str, Any]:
             track._musetalk_pending_text = body.text
             track._musetalk_pending_audio = audio_bytes
             track._musetalk_pending_voice_id = effective_voice_id
+            # Create an event so we can wait for the chained synthesis to produce
+            # frames before returning audio — keeps audio and lips in sync.
+            queued_frames_ready = asyncio.Event()
+            track._musetalk_pending_frames_ready = queued_frames_ready
             logger.info("MuseTalk: synthesis busy, queued text+audio for session %s", session_id)
+            try:
+                await asyncio.wait_for(queued_frames_ready.wait(), timeout=90.0)
+                logger.info("MuseTalk: queued frames ready — returning audio in sync with frames")
+            except asyncio.TimeoutError:
+                logger.warning("MuseTalk: queued frames_ready timed out; returning audio without sync")
         else:
             track._musetalk_busy = True
             track._musetalk_pending_text = None
@@ -814,13 +823,15 @@ async def _musetalk_speak(
         pending_text = track._musetalk_pending_text
         pending_audio = track._musetalk_pending_audio
         pending_voice = track._musetalk_pending_voice_id or voice_id
+        pending_frames_ready = getattr(track, "_musetalk_pending_frames_ready", None)
         if pending_text:
             track._musetalk_pending_text = None
             track._musetalk_pending_audio = None
             track._musetalk_pending_voice_id = None
+            track._musetalk_pending_frames_ready = None
             logger.info("MuseTalk: chaining synthesis for pending text (len=%d)", len(pending_text))
             asyncio.create_task(
-                _musetalk_speak(track, pending_text, api_key, pending_voice, audio_bytes=pending_audio)
+                _musetalk_speak(track, pending_text, api_key, pending_voice, audio_bytes=pending_audio, frames_ready_event=pending_frames_ready)
             )
         else:
             track._musetalk_busy = False

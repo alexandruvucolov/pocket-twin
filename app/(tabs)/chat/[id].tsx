@@ -155,6 +155,7 @@ export default function ChatScreen() {
   const livePeerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const liveSessionRef = useRef<ActiveLiveSession | null>(null);
   const liveConnectAttemptRef = useRef(0);
+  const startingLiveRef = useRef(false);
   const pendingIceCandidatesRef = useRef<
     Array<{
       candidate: string | null;
@@ -264,6 +265,7 @@ export default function ChatScreen() {
     setIsLiveMode(false);
     setIsLiveConnecting(false);
     setLiveStatusText("Offline");
+    startingLiveRef.current = false;
 
     if (!currentSession) return;
 
@@ -394,7 +396,8 @@ export default function ChatScreen() {
   );
 
   const startLiveStream = useCallback(async () => {
-    if (!avatar || isLiveConnecting) return;
+    if (!avatar) return;
+    if (startingLiveRef.current) return; // prevent concurrent calls
     if (!liveBackendConfigured) {
       Alert.alert(
         "Live avatar unavailable",
@@ -405,6 +408,7 @@ export default function ChatScreen() {
 
     setIsLiveConnecting(true);
     setLiveStatusText("Preparing live avatar…");
+    startingLiveRef.current = true;
 
     try {
       await disconnectLiveStream();
@@ -503,12 +507,20 @@ export default function ChatScreen() {
           return;
         }
 
-        if (
-          nextState === "failed" ||
-          nextState === "disconnected" ||
-          nextState === "closed"
-        ) {
-          setIsLiveMode(false);
+        // "disconnected" is transient — WebRTC may self-recover; just update status.
+        if (nextState === "disconnected") {
+          setLiveStatusText("Reconnecting…");
+          return;
+        }
+
+        // "failed" or "closed" are terminal — do a full cleanup so the button
+        // resets to Offline and can be pressed again cleanly.
+        // Guard with isCurrentAttempt() so a stale old PC firing "closed" after
+        // a new session was already created does NOT kill the new session.
+        if (nextState === "failed" || nextState === "closed") {
+          if (isCurrentAttempt()) {
+            void disconnectLiveStream();
+          }
           setLiveStatusText(nextState === "failed" ? "Live failed" : "Offline");
         }
       };
@@ -553,7 +565,9 @@ export default function ChatScreen() {
         }
 
         if (nextState === "failed") {
-          setIsLiveMode(false);
+          if (isCurrentAttempt()) {
+            void disconnectLiveStream();
+          }
           setLiveStatusText("ICE failed");
         }
       };
@@ -615,6 +629,7 @@ export default function ChatScreen() {
           : "Make sure EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL points to your RunPod backend and the service is online.";
       Alert.alert("Live session failed", `${msg}\n\n${hint}`);
     } finally {
+      startingLiveRef.current = false;
       setIsLiveConnecting(false);
     }
   }, [
@@ -627,19 +642,28 @@ export default function ChatScreen() {
   ]);
 
   const toggleLiveStream = useCallback(async () => {
-    if (isLiveMode || isLiveConnecting) {
+    if (isLiveMode) {
       await disconnectLiveStream();
       return;
     }
-
+    // Whether offline or stuck in connecting state, always (re)start cleanly.
     await startLiveStream();
-  }, [disconnectLiveStream, isLiveConnecting, isLiveMode, startLiveStream]);
+  }, [disconnectLiveStream, isLiveMode, startLiveStream]);
 
+  // Disconnect live session on unmount (component destroyed)
   useEffect(() => {
     return () => {
       void disconnectLiveStream();
     };
   }, [disconnectLiveStream]);
+
+  // Disconnect live session when switching between avatars.
+  // [id].tsx is NOT remounted on param change — only id updates — so the old
+  // session would survive unless we explicitly tear it down here.
+  useEffect(() => {
+    void disconnectLiveStream();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   const isVoiceSessionActive = useCallback((sessionId: number) => {
     return isVoiceModeRef.current && voiceSessionIdRef.current === sessionId;
