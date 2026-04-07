@@ -45,14 +45,22 @@ else
     echo "[start.sh] Checkpoints found: $(ls $VOLUME_CHECKPOINTS | tr '\n' ' ')"
 fi
 
-# Create symlink so LatentSync finds checkpoints at its expected path
+# Create symlink so LatentSync finds checkpoints at its expected path.
+# The cloned repo may have an empty checkpoints/ dir — remove it so the symlink works.
 if [ -L "$LATENTSYNC_CKPT_DIR" ]; then
-    echo "[start.sh] Symlink already exists."
-elif [ ! -d "$LATENTSYNC_CKPT_DIR" ]; then
-    echo "[start.sh] Creating symlink: $LATENTSYNC_CKPT_DIR -> $VOLUME_CHECKPOINTS"
-    ln -s "$VOLUME_CHECKPOINTS" "$LATENTSYNC_CKPT_DIR"
+    echo "[start.sh] Symlink already exists: $(readlink $LATENTSYNC_CKPT_DIR)"
 else
-    echo "[start.sh] Checkpoints directory already present."
+    # Remove empty dir from git clone (if present)
+    if [ -d "$LATENTSYNC_CKPT_DIR" ] && [ -z "$(ls -A "$LATENTSYNC_CKPT_DIR" 2>/dev/null)" ]; then
+        echo "[start.sh] Removing empty checkpoints dir from git clone..."
+        rm -rf "$LATENTSYNC_CKPT_DIR"
+    fi
+    if [ ! -d "$LATENTSYNC_CKPT_DIR" ]; then
+        echo "[start.sh] Creating symlink: $LATENTSYNC_CKPT_DIR -> $VOLUME_CHECKPOINTS"
+        ln -s "$VOLUME_CHECKPOINTS" "$LATENTSYNC_CKPT_DIR"
+    else
+        echo "[start.sh] WARNING: checkpoints dir exists and is not empty — not symlinking"
+    fi
 fi
 
 echo "[start.sh] Starting RunPod handler..."
