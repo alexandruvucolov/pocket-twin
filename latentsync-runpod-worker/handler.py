@@ -215,7 +215,7 @@ def _warmup_models_on_startup() -> None:
     This avoids charging the first request for model download/load time,
     which can trigger execution-time throttling on strict endpoints.
     """
-    warmup_flag = os.environ.get("WARMUP_MODELS_ON_STARTUP", "1").strip().lower()
+    warmup_flag = os.environ.get("WARMUP_MODELS_ON_STARTUP", "0").strip().lower()
     if warmup_flag in {"0", "false", "no", "off"}:
         print("[Startup] Model warmup disabled via WARMUP_MODELS_ON_STARTUP")
         return

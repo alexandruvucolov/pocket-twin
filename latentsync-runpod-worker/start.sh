@@ -56,8 +56,7 @@ else
     fi
 fi
 
-echo "[start.sh] Symlink state:"
-ls -la /workspace/LatentSync/ | grep checkpoints
+echo "[start.sh] Startup checks complete."
 
 # -- 4. Launch handler -----------------------------------------------------------
 echo "[start.sh] Launching handler..."
