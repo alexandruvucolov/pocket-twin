@@ -3,12 +3,17 @@
 #
 # Checkpoints live on a RunPod Network Volume mounted at /runpod-volume.
 # If not present, downloads them automatically (first cold start only).
-# Subsequent starts reuse the cached volume — no re-download.
+# HF_HOME is pointed at the volume so the VAE + other HF models are also cached.
 
 set -e
 
 VOLUME_CHECKPOINTS="/runpod-volume/LatentSync-checkpoints"
 LATENTSYNC_CKPT_DIR="/workspace/LatentSync/checkpoints"
+
+# Cache ALL HuggingFace downloads on the volume (survives across cold starts)
+export HF_HOME="/runpod-volume/hf-cache"
+mkdir -p "$HF_HOME"
+echo "[start.sh] HF_HOME=$HF_HOME"
 
 echo "[start.sh] Checking for checkpoints..."
 

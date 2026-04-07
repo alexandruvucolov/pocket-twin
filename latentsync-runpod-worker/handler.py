@@ -60,7 +60,10 @@ def _ensure_models_loaded() -> None:
     # latentsync_infer.py lives alongside handler.py in the same directory
     # so we can import directly and call its private loader.
     import latentsync_infer as lsi  # type: ignore[import-untyped]
-    lsi._load_models()
+    ok = lsi._load_models()
+    if not ok:
+        reason = lsi.get_last_synthesize_reason() or "unknown — check worker logs"
+        raise RuntimeError(f"LatentSync model loading failed: {reason}")
     _pipeline = lsi._pipeline
     _models_loaded = True
 
@@ -107,7 +110,11 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     if not audio_base64 and not audio_url:
         return {"error": "Missing audio. Provide audio_base64 or audio_url."}
 
-    _ensure_models_loaded()
+    try:
+        _ensure_models_loaded()
+    except Exception as exc:
+        print(f"[Handler] Model loading failed: {exc}")
+        return {"error": f"Model loading failed: {exc}"}
 
     with tempfile.TemporaryDirectory() as tmpdir_str:
         tmpdir = Path(tmpdir_str)
