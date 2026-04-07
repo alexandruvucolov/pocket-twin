@@ -133,6 +133,7 @@ def _load_models() -> bool:
     """
     global _pipeline, _models_available, _infer_width, _infer_height  # type: ignore[misc]
     global _num_frames, _audio_feat_length
+    global _last_synthesize_reason
 
     # Fast path — already known
     if _models_available is True:
@@ -147,6 +148,7 @@ def _load_models() -> bool:
         orig_cwd = os.getcwd()
         try:
             if not LATENTSYNC_DIR.is_dir():
+                _last_synthesize_reason = f"LATENTSYNC_DIR not found: {LATENTSYNC_DIR}"
                 logger.warning(
                     "LatentSync: directory not found: %s — set LATENTSYNC_DIR env var",
                     LATENTSYNC_DIR,
@@ -167,6 +169,7 @@ def _load_models() -> bool:
                 from latentsync.pipelines.lipsync_pipeline import LipsyncPipeline  # noqa: PLC0415
                 from latentsync.whisper.audio2feature import Audio2Feature  # noqa: PLC0415
             except ImportError as exc:
+                _last_synthesize_reason = f"LatentSync package import failed: {exc}"
                 logger.warning("LatentSync package not importable: %s", exc)
                 _models_available = False
                 return False
@@ -174,6 +177,7 @@ def _load_models() -> bool:
             # ── Config ─────────────────────────────────────────────────────
             config_path = LATENTSYNC_DIR / "configs" / "unet" / "stage2_512.yaml"
             if not config_path.exists():
+                _last_synthesize_reason = f"Missing config file: {config_path}"
                 logger.warning("LatentSync: config not found: %s", config_path)
                 _models_available = False
                 return False
@@ -206,6 +210,7 @@ def _load_models() -> bool:
             whisper_name = "tiny.pt" if cross_attn_dim <= 384 else "small.pt"
             whisper_path = str(LATENTSYNC_DIR / "checkpoints" / "whisper" / whisper_name)
             if not Path(whisper_path).exists():
+                _last_synthesize_reason = f"Missing whisper checkpoint: {whisper_path}"
                 logger.warning("LatentSync: whisper checkpoint not found: %s", whisper_path)
                 _models_available = False
                 return False
@@ -227,6 +232,7 @@ def _load_models() -> bool:
             # ── UNet ───────────────────────────────────────────────────────
             ckpt_path = str(LATENTSYNC_DIR / "checkpoints" / "latentsync_unet.pt")
             if not Path(ckpt_path).exists():
+                _last_synthesize_reason = f"Missing UNet checkpoint: {ckpt_path}"
                 logger.warning("LatentSync: UNet checkpoint not found: %s", ckpt_path)
                 _models_available = False
                 return False
@@ -259,10 +265,12 @@ def _load_models() -> bool:
 
             _pipeline = pipe
             _models_available = True
+            _last_synthesize_reason = ""
             logger.info("LatentSync: pipeline loaded successfully")
             return True
 
         except Exception as exc:
+            _last_synthesize_reason = f"Model loading exception: {exc}"
             logger.warning("LatentSync: model loading failed: %s", exc, exc_info=True)
             _models_available = False
             return False
