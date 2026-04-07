@@ -1,6 +1,6 @@
 #!/bin/bash
 # start.sh -- container entrypoint for the LatentSync serverless worker.
-# CI trigger: keep this file touched when forcing a rebuild.
+# CI trigger: keep this file touched when forcing a rebuild (v2/v3/latest tags).
 #
 # REQUIREMENTS:
 #   1. A RunPod Network Volume must be attached, mounted at /runpod-volume
