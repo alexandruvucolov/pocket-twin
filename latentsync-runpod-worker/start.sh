@@ -15,29 +15,27 @@ LATENTSYNC_CKPT_DIR="/workspace/LatentSync/checkpoints"
 
 echo "[start.sh] ===== LatentSync worker start ====="
 
-# -- 1. Volume must be mounted ---------------------------------------------------
-if [ ! -d "/runpod-volume" ]; then
-    echo "[start.sh] FATAL: /runpod-volume is not mounted."
-    echo "[start.sh] Attach the latentsync-checkpoints network volume to this"
-    echo "[start.sh] endpoint: RunPod UI -> Endpoint -> Edit -> Network Volume."
-    exit 1
+# -- 1. Configure cache path -----------------------------------------------------
+if [ -d "/runpod-volume" ]; then
+    export HF_HOME="/runpod-volume/hf-cache"
+    mkdir -p "$HF_HOME"
+    echo "[start.sh] Volume mounted. HF_HOME=$HF_HOME"
+else
+    export HF_HOME="/tmp/hf-cache"
+    mkdir -p "$HF_HOME"
+    echo "[start.sh] WARNING: /runpod-volume is not mounted. Using ephemeral cache: $HF_HOME"
 fi
-
-export HF_HOME="/runpod-volume/hf-cache"
-mkdir -p "$HF_HOME"
-echo "[start.sh] Volume mounted. HF_HOME=$HF_HOME"
 
 # -- 2. Checkpoints must be present ----------------------------------------------
 echo "[start.sh] Checking for checkpoints at $VOLUME_CHECKPOINTS ..."
 if [ ! -d "$VOLUME_CHECKPOINTS" ] || [ -z "$(ls -A "$VOLUME_CHECKPOINTS" 2>/dev/null)" ]; then
-    echo "[start.sh] FATAL: No checkpoints at $VOLUME_CHECKPOINTS."
+    echo "[start.sh] WARNING: No checkpoints at $VOLUME_CHECKPOINTS."
     echo "[start.sh] Run download_checkpoints.sh on a GPU pod with this volume"
-    echo "[start.sh] attached to populate it (one-time, ~6 GB)."
-    exit 1
+    echo "[start.sh] attached to populate it (one-time, ~6 GB). Worker will start anyway."
+else
+    echo "[start.sh] Checkpoints found:"
+    ls -1 "$VOLUME_CHECKPOINTS"
 fi
-
-echo "[start.sh] Checkpoints found:"
-ls -1 "$VOLUME_CHECKPOINTS"
 
 # -- 3. Symlink so LatentSync finds checkpoints at its expected path -------------
 if [ -L "$LATENTSYNC_CKPT_DIR" ]; then
