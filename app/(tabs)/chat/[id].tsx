@@ -23,25 +23,16 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { useAudioPlayer, AudioModule, RecordingPresets } from "expo-audio";
-import {
-  MediaStream,
-  RTCPeerConnection,
-  RTCSessionDescription,
-  RTCView,
-} from "react-native-webrtc";
 import { Colors } from "../../../src/constants/colors";
 import { useAvatars } from "../../../src/context/AvatarContext";
 import * as FileSystem from "expo-file-system/legacy";
 import {
-  createLiveAvatarSession,
-  deleteLiveAvatarSession,
-  isLiveAvatarBackendConfigured,
-  speakLiveAvatarText,
-  submitLiveAvatarAnswer,
-  submitLiveAvatarIceCandidate,
-} from "../../../src/lib/live-avatar";
+  isLatentSyncServerlessConfigured,
+  submitLatentSyncJob,
+  pollLatentSyncJob,
+} from "../../../src/lib/latentsync-serverless";
 import { transcribeAudio } from "../../../src/lib/openai";
-import { textToSpeech } from "../../../src/lib/elevenlabs";
+import { textToSpeech, textToSpeechBase64 } from "../../../src/lib/elevenlabs";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 const AVATAR_PANEL_HEIGHT = Math.round(SCREEN_HEIGHT * 0.48);
@@ -81,11 +72,6 @@ const ENABLE_LOCAL_PHONE_TTS =
     .trim()
     .toLowerCase() === "true";
 
-type ActiveLiveSession = {
-  provider: "backend";
-  sessionId: string;
-};
-
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -94,16 +80,11 @@ export default function ChatScreen() {
 
   const avatar = avatars.find((a: { id: string }) => a.id === id);
   const chatMessages = messages[id ?? ""] ?? [];
-  const liveBackendConfigured = isLiveAvatarBackendConfigured();
   const [displayedVideoUrl, setDisplayedVideoUrl] = useState<string | null>(
     avatar?.videoUrl ?? null,
   );
-  const [liveRemoteStream, setLiveRemoteStream] = useState<MediaStream | null>(
-    null,
-  );
-  const [isLiveMode, setIsLiveMode] = useState(false);
-  const [isLiveConnecting, setIsLiveConnecting] = useState(false);
-  const [liveStatusText, setLiveStatusText] = useState("Offline");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
 
   const videoPlayer = useVideoPlayer(null, (player) => {
     player.loop = true;
@@ -152,17 +133,7 @@ export default function ChatScreen() {
   const voiceSheetAnim = useRef(new Animated.Value(VOICE_SHEET_HEIGHT)).current;
   const inputBarAnim = useRef(new Animated.Value(0)).current; // 0 = visible, 1 = hidden
   const coinsRef = useRef(coins);
-  const livePeerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const liveSessionRef = useRef<ActiveLiveSession | null>(null);
-  const liveConnectAttemptRef = useRef(0);
-  const startingLiveRef = useRef(false);
-  const pendingIceCandidatesRef = useRef<
-    Array<{
-      candidate: string | null;
-      sdpMid: string | null;
-      sdpMLineIndex: number | null;
-    }>
-  >([]);
+  const isPlayingResponseRef = useRef(false);
   const composerInset = insets.bottom + 4;
   const isKeyboardOpen = Platform.OS === "android" && keyboardHeight > 0;
   const composerDockBottom = Math.max(
@@ -220,450 +191,7 @@ export default function ChatScreen() {
     setIsSpeaking(false);
   }, [ttsPlayer]);
 
-  const getLiveAvatarSourceInput = useCallback(async () => {
-    if (!avatar?.imageUri) {
-      throw new Error("Avatar image is missing.");
-    }
-
-    if (/^https?:\/\//i.test(avatar.imageUri)) {
-      return { sourceImageUrl: avatar.imageUri };
-    }
-
-    const sourceImageBase64 = await FileSystem.readAsStringAsync(
-      avatar.imageUri,
-      {
-        encoding: FileSystem.EncodingType.Base64,
-      },
-    );
-
-    return {
-      sourceImageBase64,
-      sourceImageMimeType: avatar.imageUri.toLowerCase().endsWith(".png")
-        ? "image/png"
-        : "image/jpeg",
-    };
-  }, [avatar?.imageUri]);
-
-  const disconnectLiveStream = useCallback(async () => {
-    liveConnectAttemptRef.current += 1;
-    const currentSession = liveSessionRef.current;
-    liveSessionRef.current = null;
-    pendingIceCandidatesRef.current = [];
-
-    const peerConnection = livePeerConnectionRef.current;
-    livePeerConnectionRef.current = null;
-
-    if (peerConnection) {
-      (peerConnection as any).onicecandidate = null;
-      (peerConnection as any).ontrack = null;
-      (peerConnection as any).onconnectionstatechange = null;
-      (peerConnection as any).oniceconnectionstatechange = null;
-      peerConnection.close();
-    }
-
-    setLiveRemoteStream(null);
-    setIsLiveMode(false);
-    setIsLiveConnecting(false);
-    setLiveStatusText("Offline");
-    startingLiveRef.current = false;
-
-    if (!currentSession) return;
-
-    try {
-      await deleteLiveAvatarSession({
-        sessionId: currentSession.sessionId,
-      });
-    } catch (err) {
-      console.warn("[Live Avatar] delete live stream error:", err);
-    }
-  }, []);
-
-  const submitCurrentLiveIceCandidate = useCallback(
-    async (
-      session: ActiveLiveSession,
-      payload: {
-        candidate: string | null;
-        sdpMid: string | null;
-        sdpMLineIndex: number | null;
-      },
-    ) => {
-      await submitLiveAvatarIceCandidate({
-        sessionId: session.sessionId,
-        ...payload,
-      });
-    },
-    [],
-  );
-
-  const playLiveBackendAudio = useCallback(
-    (text: string): Promise<void> => {
-      if (!ENABLE_LOCAL_PHONE_TTS) {
-        return Promise.resolve();
-      }
-
-      setIsSpeaking(true);
-      return new Promise<void>((resolve) => {
-        textToSpeech(text)
-          .then((fileUri) => {
-            ttsPlayer.replace({ uri: fileUri });
-            ttsPlayer.play();
-            const sub = ttsPlayer.addListener(
-              "playbackStatusUpdate",
-              (status) => {
-                if (status.didJustFinish) {
-                  setIsSpeaking(false);
-                  sub.remove();
-                  resolve();
-                }
-              },
-            );
-          })
-          .catch((err) => {
-            console.warn("[TTS] live backend audio error:", err);
-            setIsSpeaking(false);
-            resolve();
-          });
-      });
-    },
-    [ttsPlayer],
-  );
-
-  const speakLiveReply = useCallback(
-    async (text: string) => {
-      const session = liveSessionRef.current;
-      if (!session) {
-        throw new Error("Live stream is not connected.");
-      }
-
-      lastSpokenTextRef.current = text;
-      try {
-        const audioResult = await speakLiveAvatarText({
-          sessionId: session.sessionId,
-          text,
-          voiceId: avatar?.voiceId,
-        });
-        // Play audio returned from the backend — same bytes used for MuseTalk,
-        // so there is exactly one ElevenLabs call per message.
-        // Await playback completion so the voice loop doesn't restart the mic
-        // while the avatar is still speaking (would cause echo / lost turn).
-        if (audioResult.audioBase64) {
-          setIsSpeaking(true);
-          await new Promise<void>(async (resolve) => {
-            try {
-              const fileUri =
-                (FileSystem.cacheDirectory ?? "") + `tts_${Date.now()}.mp3`;
-              await FileSystem.writeAsStringAsync(
-                fileUri,
-                audioResult.audioBase64,
-                { encoding: FileSystem.EncodingType.Base64 },
-              );
-              ttsPlayer.replace({ uri: fileUri });
-              ttsPlayer.play();
-              const sub = ttsPlayer.addListener(
-                "playbackStatusUpdate",
-                (status) => {
-                  if (status.didJustFinish) {
-                    setIsSpeaking(false);
-                    sub.remove();
-                    resolve();
-                  }
-                },
-              );
-            } catch (audioErr) {
-              console.warn("[TTS] Failed to play backend audio:", audioErr);
-              setIsSpeaking(false);
-              resolve();
-            }
-          });
-        }
-      } catch (err) {
-        // If the backend session is gone (e.g. pod was restarted), clean up the
-        // stale session so the UI resets to "Offline" and the user can reconnect.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (
-          msg.includes("404") ||
-          msg.toLowerCase().includes("session not found")
-        ) {
-          console.warn(
-            "[Avatar] Session gone on backend – disconnecting stale live session.",
-          );
-          void disconnectLiveStream();
-        }
-        throw err;
-      }
-    },
-    [disconnectLiveStream, ttsPlayer],
-  );
-
-  const startLiveStream = useCallback(async () => {
-    if (!avatar) return;
-    if (startingLiveRef.current) return; // prevent concurrent calls
-    if (!liveBackendConfigured) {
-      Alert.alert(
-        "Live avatar unavailable",
-        "Set EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL to your server and make sure the live avatar backend is online.",
-      );
-      return;
-    }
-
-    setIsLiveConnecting(true);
-    setLiveStatusText("Preparing live avatar…");
-    startingLiveRef.current = true;
-
-    try {
-      await disconnectLiveStream();
-      const attemptId = liveConnectAttemptRef.current + 1;
-      liveConnectAttemptRef.current = attemptId;
-
-      const isCurrentAttempt = () =>
-        liveConnectAttemptRef.current === attemptId;
-
-      let liveOffer: { type: string; sdp: string };
-      let iceServers:
-        | Array<{
-            urls: string | string[];
-            username?: string;
-            credential?: string;
-          }>
-        | undefined;
-
-      setLiveStatusText("Preparing live avatar…");
-      const sourceInput = await getLiveAvatarSourceInput();
-      setLiveStatusText("Opening live stream…");
-      const streamSession = await createLiveAvatarSession({
-        avatarId: avatar.id,
-        avatarName: avatar.name,
-        ...sourceInput,
-        livePortraitMode: "lips-only",
-        livePortraitOptions: {
-          module: "R_lip",
-          preserveHeadPose: true,
-          preserveEyeGaze: true,
-          normalizeLips: true,
-        },
-        bboxShift: -15,
-      });
-      liveSessionRef.current = {
-        provider: "backend",
-        sessionId: streamSession.sessionId,
-      };
-      liveOffer = streamSession.offer;
-      iceServers = streamSession.iceServers;
-
-      if (!isCurrentAttempt()) {
-        return;
-      }
-
-      const activeSession = liveSessionRef.current;
-      if (!activeSession) {
-        throw new Error("Live session was not created.");
-      }
-
-      const peerConnection = new RTCPeerConnection({
-        iceServers,
-      });
-      livePeerConnectionRef.current = peerConnection;
-
-      (peerConnection as any).ontrack = (event: any) => {
-        if (!isCurrentAttempt()) {
-          return;
-        }
-        if (event.track?.kind !== "video") {
-          return;
-        }
-
-        event.track.enabled = true;
-        const incomingStream = event.streams?.[0] ?? null;
-
-        const attachRemoteTrack = () => {
-          const nextStream = incomingStream ?? new MediaStream();
-          if (!incomingStream) {
-            nextStream.addTrack(event.track);
-          }
-          setLiveRemoteStream(nextStream);
-          setIsLiveMode(true);
-          setLiveStatusText("Live");
-          setIsLiveConnecting(false);
-        };
-
-        attachRemoteTrack();
-        event.track.onunmute = attachRemoteTrack;
-      };
-
-      (peerConnection as any).onconnectionstatechange = () => {
-        if (!isCurrentAttempt()) {
-          return;
-        }
-        const nextState = peerConnection.connectionState;
-        if (nextState === "connected") {
-          setIsLiveMode(true);
-          setLiveStatusText("Live");
-          setIsLiveConnecting(false);
-          return;
-        }
-
-        if (nextState === "connecting") {
-          setLiveStatusText("Connecting…");
-          return;
-        }
-
-        // "disconnected" is transient — WebRTC may self-recover; just update status.
-        if (nextState === "disconnected") {
-          setLiveStatusText("Reconnecting…");
-          return;
-        }
-
-        // "failed" or "closed" are terminal — do a full cleanup so the button
-        // resets to Offline and can be pressed again cleanly.
-        // Guard with isCurrentAttempt() so a stale old PC firing "closed" after
-        // a new session was already created does NOT kill the new session.
-        if (nextState === "failed" || nextState === "closed") {
-          if (isCurrentAttempt()) {
-            void disconnectLiveStream();
-          }
-          setLiveStatusText(nextState === "failed" ? "Live failed" : "Offline");
-        }
-      };
-
-      (peerConnection as any).onicecandidate = (event: any) => {
-        if (!isCurrentAttempt()) {
-          return;
-        }
-        const session = liveSessionRef.current;
-        if (!session) return;
-
-        const payload = {
-          candidate: event.candidate?.candidate ?? null,
-          sdpMid: event.candidate?.sdpMid ?? null,
-          sdpMLineIndex: event.candidate?.sdpMLineIndex ?? null,
-        };
-
-        if (!peerConnection.localDescription) {
-          pendingIceCandidatesRef.current.push(payload);
-          return;
-        }
-
-        void submitCurrentLiveIceCandidate(session, payload).catch((err) => {
-          console.warn("[Live Avatar] ICE error:", err);
-        });
-      };
-
-      (peerConnection as any).oniceconnectionstatechange = () => {
-        if (!isCurrentAttempt()) {
-          return;
-        }
-        const nextState = peerConnection.iceConnectionState;
-        if (nextState === "checking") {
-          setLiveStatusText("Connecting…");
-          return;
-        }
-
-        if (nextState === "connected" || nextState === "completed") {
-          setLiveStatusText("Live");
-          setIsLiveConnecting(false);
-          return;
-        }
-
-        if (nextState === "failed") {
-          if (isCurrentAttempt()) {
-            void disconnectLiveStream();
-          }
-          setLiveStatusText("ICE failed");
-        }
-      };
-
-      await peerConnection.setRemoteDescription(
-        new RTCSessionDescription(liveOffer),
-      );
-
-      if (!isCurrentAttempt()) {
-        return;
-      }
-
-      if (peerConnection.signalingState !== "have-remote-offer") {
-        throw new Error(
-          `PeerConnection signaling state became ${peerConnection.signalingState} before createAnswer().`,
-        );
-      }
-
-      const answer = await peerConnection.createAnswer();
-
-      if (!isCurrentAttempt()) {
-        return;
-      }
-
-      await peerConnection.setLocalDescription(answer);
-
-      if (!answer.sdp || !answer.type) {
-        throw new Error("WebRTC answer was incomplete.");
-      }
-
-      await submitLiveAvatarAnswer({
-        sessionId: activeSession.sessionId,
-        answer: {
-          type: answer.type,
-          sdp: answer.sdp,
-        },
-      });
-
-      const queuedIceCandidates = [...pendingIceCandidatesRef.current];
-      pendingIceCandidatesRef.current = [];
-
-      await Promise.all(
-        queuedIceCandidates.map((candidate) =>
-          submitCurrentLiveIceCandidate(activeSession, candidate).catch(
-            (err) => {
-              console.warn("[Live Avatar] flush ICE error:", err);
-            },
-          ),
-        ),
-      );
-    } catch (err) {
-      await disconnectLiveStream();
-      const raw = err instanceof Error ? err.message : String(err);
-      // Cap the message so a long server error body never fills the screen.
-      const msg = raw.length > 200 ? `${raw.slice(0, 200)}\u2026` : raw;
-      const hint =
-        msg.includes("502") || msg.includes("503")
-          ? "The backend pod may be starting up or unreachable. Try again in a few seconds."
-          : "Make sure EXPO_PUBLIC_LIVE_AVATAR_BACKEND_URL points to your RunPod backend and the service is online.";
-      Alert.alert("Live session failed", `${msg}\n\n${hint}`);
-    } finally {
-      startingLiveRef.current = false;
-      setIsLiveConnecting(false);
-    }
-  }, [
-    avatar,
-    disconnectLiveStream,
-    getLiveAvatarSourceInput,
-    isLiveConnecting,
-    liveBackendConfigured,
-    submitCurrentLiveIceCandidate,
-  ]);
-
-  const toggleLiveStream = useCallback(async () => {
-    if (isLiveMode) {
-      await disconnectLiveStream();
-      return;
-    }
-    // Whether offline or stuck in connecting state, always (re)start cleanly.
-    await startLiveStream();
-  }, [disconnectLiveStream, isLiveMode, startLiveStream]);
-
-  // Disconnect live session on unmount (component destroyed)
-  useEffect(() => {
-    return () => {
-      void disconnectLiveStream();
-    };
-  }, [disconnectLiveStream]);
-
-  // Disconnect live session when switching between avatars.
-  // [id].tsx is NOT remounted on param change — only id updates — so the old
-  // session would survive unless we explicitly tear it down here.
-  useEffect(() => {
-    void disconnectLiveStream();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  // (live-avatar / WebRTC removed — using RunPod serverless instead)
 
   const isVoiceSessionActive = useCallback((sessionId: number) => {
     return isVoiceModeRef.current && voiceSessionIdRef.current === sessionId;
@@ -886,16 +414,8 @@ export default function ChatScreen() {
     try {
       const reply = await sendMessage(id ?? "", text);
       setIsSending(false);
-      try {
-        if (liveSessionRef.current) {
-          await speakLiveReply(reply);
-        } else {
-          void speakReply(reply);
-        }
-      } catch (avatarErr) {
-        console.warn("[Avatar] reply playback error:", avatarErr);
-        void speakReply(reply);
-      }
+      // Fire-and-forget: generate lip-sync video (or fallback to TTS audio)
+      void generateAvatarResponse(reply);
     } catch (err) {
       console.warn("[Chat] sendMessage error:", err);
     } finally {
@@ -1165,16 +685,8 @@ export default function ChatScreen() {
 
       if (!isVoiceSessionActive(sessionId)) return;
       setVoicePhase("speaking");
-      try {
-        if (liveSessionRef.current) {
-          await speakLiveReply(reply);
-        } else {
-          await speakReplyAndWait(reply);
-        }
-      } catch (avatarErr) {
-        console.warn("[Avatar] animate voice reply error:", avatarErr);
-        await speakReplyAndWait(reply);
-      }
+      // Await full generation + playback so mic doesn't reopen during response
+      await generateAvatarResponse(reply);
       if (!isVoiceSessionActive(sessionId) || turnId !== voiceTurnIdRef.current)
         return;
 
@@ -1298,6 +810,137 @@ export default function ChatScreen() {
     void speakReplyAndWait(text);
   };
 
+  // ─── Serverless avatar response ────────────────────────────────────────────
+
+  /**
+   * Plays a response video once, then restores the idle loop.
+   * Resolves when playback is complete (or times out after 90 s).
+   */
+  const waitForResponseVideoPlayback = useCallback(
+    (videoUrl: string): Promise<void> => {
+      return new Promise<void>((resolve) => {
+        isPlayingResponseRef.current = true;
+        setDisplayedVideoUrl(videoUrl);
+        videoPlayer.muted = false;
+        videoPlayer.loop = false;
+        videoPlayer.replace(videoUrl);
+        videoPlayer.play();
+
+        let hasStartedPlaying = false;
+        let resolved = false;
+
+        const resolveOnce = () => {
+          if (resolved) return;
+          resolved = true;
+          sub.remove();
+          clearTimeout(safetyTimer);
+          isPlayingResponseRef.current = false;
+          videoPlayer.muted = true;
+          videoPlayer.loop = true;
+          const idleUrl = avatar?.videoUrl ?? null;
+          setDisplayedVideoUrl(idleUrl);
+          if (idleUrl) {
+            videoPlayer.replace(idleUrl);
+            videoPlayer.play();
+          }
+          resolve();
+        };
+
+        const sub = videoPlayer.addListener("statusChange", (event: any) => {
+          const status = event.status as string;
+          if (status === "readyToPlay") {
+            hasStartedPlaying = true;
+            return;
+          }
+          if (
+            status === "idle" &&
+            hasStartedPlaying &&
+            isPlayingResponseRef.current
+          ) {
+            resolveOnce();
+          }
+        });
+
+        // Safety: always resolve after 90 s
+        const safetyTimer = setTimeout(resolveOnce, 90_000);
+      });
+    },
+    [avatar?.videoUrl, videoPlayer],
+  );
+
+  /**
+   * Full serverless pipeline:
+   *   ElevenLabs TTS → RunPod LatentSync job → response video (audio muxed in).
+   * Falls back to local audio-only TTS when the endpoint is not configured.
+   * Returns a Promise that resolves after playback finishes (voice loop waits).
+   */
+  const generateAvatarResponse = useCallback(
+    async (text: string): Promise<void> => {
+      if (!isLatentSyncServerlessConfigured() || !avatar) {
+        await speakReplyAndWait(text);
+        return;
+      }
+
+      setIsGenerating(true);
+      setGenerationProgress(0);
+
+      try {
+        // 1. ElevenLabs TTS → base64 audio
+        setGenerationProgress(5);
+        const audioBase64 = await textToSpeechBase64(
+          text,
+          avatar.voiceId ?? undefined,
+        );
+
+        // 2. Resolve source image
+        setGenerationProgress(15);
+        let sourceImageUrl: string | undefined;
+        let sourceImageBase64: string | undefined;
+        let sourceImageMimeType: string | undefined;
+        if (/^https?:\/\//i.test(avatar.imageUri)) {
+          sourceImageUrl = avatar.imageUri;
+        } else {
+          sourceImageBase64 = await FileSystem.readAsStringAsync(
+            avatar.imageUri,
+            { encoding: FileSystem.EncodingType.Base64 },
+          );
+          sourceImageMimeType = avatar.imageUri.toLowerCase().endsWith(".png")
+            ? "image/png"
+            : "image/jpeg";
+        }
+
+        // 3. Submit RunPod job
+        setGenerationProgress(20);
+        const { id: jobId } = await submitLatentSyncJob({
+          sourceImageUrl,
+          sourceImageBase64,
+          sourceImageMimeType,
+          audioBase64,
+        });
+
+        // 4. Poll until complete
+        const videoUrl = await pollLatentSyncJob(jobId, (pct) => {
+          setGenerationProgress(20 + Math.round(pct * 0.75));
+        });
+
+        setGenerationProgress(100);
+        setIsGenerating(false);
+
+        // 5. Play response video; await for voice loop sync
+        await waitForResponseVideoPlayback(videoUrl);
+      } catch (err) {
+        console.warn("[LatentSync] generation failed:", err);
+        setIsGenerating(false);
+        setGenerationProgress(0);
+        await speakReplyAndWait(text);
+      }
+
+      setIsGenerating(false);
+      setGenerationProgress(0);
+    },
+    [avatar, speakReplyAndWait, waitForResponseVideoPlayback],
+  );
+
   if (!avatar) {
     return (
       <SafeAreaView style={styles.root} edges={["top"]}>
@@ -1318,24 +961,23 @@ export default function ChatScreen() {
     <SafeAreaView style={styles.root} edges={["top"]}>
       {/* ── LAYER 1 (behind): Avatar panel ── absolute, always visible */}
       <Animated.View
-        style={[
-          styles.avatarPanel,
-          liveRemoteStream ? null : { opacity: pulseAnim },
-          Platform.OS === "android" && liveRemoteStream
-            ? styles.avatarPanelLiveAndroid
-            : null,
-        ]}
+        style={[styles.avatarPanel, { opacity: isGenerating ? 1 : pulseAnim }]}
       >
-        {liveRemoteStream ? (
-          <RTCView
-            key={liveRemoteStream.toURL()}
-            streamURL={liveRemoteStream.toURL()}
-            style={[styles.avatarPanelImage, styles.avatarPanelRtcView]}
-            objectFit="cover"
-            mirror={false}
-            zOrder={0}
-            collapsable={false}
-          />
+        {isGenerating ? (
+          /* ── Loading overlay: blurred avatar + progress % ── */
+          <>
+            <Image
+              source={{ uri: avatar.imageUri }}
+              style={[styles.avatarPanelImage, styles.avatarPanelBlurred]}
+              blurRadius={18}
+            />
+            <View style={styles.generatingOverlay}>
+              <Text style={styles.generatingPercent}>
+                {generationProgress}%
+              </Text>
+              <Text style={styles.generatingLabel}>Generating response…</Text>
+            </View>
+          </>
         ) : displayedVideoUrl ? (
           <VideoView
             player={videoPlayer}
@@ -1349,7 +991,7 @@ export default function ChatScreen() {
             style={styles.avatarPanelImage}
           />
         )}
-        {!liveRemoteStream ? <View style={styles.avatarPanelOverlay} /> : null}
+        {!isGenerating ? <View style={styles.avatarPanelOverlay} /> : null}
         {/* Header overlaid on avatar */}
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity
@@ -1361,23 +1003,6 @@ export default function ChatScreen() {
             </View>
           </TouchableOpacity>
           <View style={{ flex: 1 }} />
-          <TouchableOpacity
-            style={[
-              styles.liveBtn,
-              (isLiveMode || isLiveConnecting) && styles.liveBtnActive,
-              !liveBackendConfigured && styles.featureBtnDisabled,
-            ]}
-            onPress={toggleLiveStream}
-            activeOpacity={0.8}
-          >
-            {isLiveConnecting ? (
-              <ActivityIndicator size="small" color={Colors.white} />
-            ) : (
-              <Text style={styles.liveBtnText}>
-                {isLiveMode ? "🟢 Live" : "Live"}
-              </Text>
-            )}
-          </TouchableOpacity>
           <TouchableOpacity
             style={styles.coinBadge}
             onPress={() => router.push("/buy-coins")}
@@ -1392,17 +1017,6 @@ export default function ChatScreen() {
         {/* Name + status at bottom-left of avatar */}
         <View style={styles.avatarMeta}>
           <Text style={styles.avatarPanelName}>{avatar.name}</Text>
-          {isLiveMode || isLiveConnecting ? (
-            <View style={styles.liveStatusRow}>
-              <View
-                style={[
-                  styles.liveDot,
-                  isLiveConnecting && styles.liveDotConnecting,
-                ]}
-              />
-              <Text style={styles.liveStatusText}>{liveStatusText}</Text>
-            </View>
-          ) : null}
           {isSending ? (
             <View style={styles.thinkingRow}>
               <ActivityIndicator color={Colors.white} size="small" />
@@ -1732,6 +1346,34 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     resizeMode: "cover",
+  },
+  avatarPanelBlurred: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+    opacity: 0.55,
+  },
+  generatingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  generatingPercent: {
+    color: Colors.white,
+    fontSize: 64,
+    fontWeight: "900",
+    textShadowColor: "rgba(0,0,0,0.7)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  generatingLabel: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 15,
+    fontWeight: "600",
+    textShadowColor: "rgba(0,0,0,0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   avatarPanelRtcView: {
     backgroundColor: "#000",
