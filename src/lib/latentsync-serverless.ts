@@ -132,7 +132,7 @@ export async function pollLatentSyncJob(
   const apiKey = getApiKey();
   const baseUrl = getBaseUrl();
 
-  const maxWaitMs = options?.maxWaitMs ?? 300_000; // 5 min hard cap
+  const maxWaitMs = options?.maxWaitMs ?? 900_000; // 15 min — handles cold start image pull
   const pollIntervalMs = options?.pollIntervalMs ?? 1_500;
   const expectedMs = options?.expectedGenerationMs ?? 30_000;
 
@@ -152,8 +152,8 @@ export async function pollLatentSyncJob(
 
     switch (state.status) {
       case "IN_QUEUE": {
-        // 0–10 % while queued (assumes max 20 s queue wait)
-        const pct = Math.min(10, Math.round((elapsed / 20_000) * 10));
+        // 0–10 % while queued (cold start can take up to 10 min for first image pull)
+        const pct = Math.min(10, Math.round((elapsed / 600_000) * 10));
         onProgress(pct);
         break;
       }

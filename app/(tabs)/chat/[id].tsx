@@ -919,9 +919,13 @@ export default function ChatScreen() {
         });
 
         // 4. Poll until complete
-        const videoUrl = await pollLatentSyncJob(jobId, (pct) => {
-          setGenerationProgress(20 + Math.round(pct * 0.75));
-        });
+        const videoUrl = await pollLatentSyncJob(
+          jobId,
+          (pct) => {
+            setGenerationProgress(20 + Math.round(pct * 0.75));
+          },
+          { expectedGenerationMs: 120_000 },
+        );
 
         setGenerationProgress(100);
         setIsGenerating(false);
@@ -975,7 +979,13 @@ export default function ChatScreen() {
               <Text style={styles.generatingPercent}>
                 {generationProgress}%
               </Text>
-              <Text style={styles.generatingLabel}>Generating response…</Text>
+              <Text style={styles.generatingLabel}>
+                {generationProgress < 25
+                  ? "Starting worker…"
+                  : generationProgress < 40
+                    ? "Loading AI model…"
+                    : "Generating response…"}
+              </Text>
             </View>
           </>
         ) : displayedVideoUrl ? (
