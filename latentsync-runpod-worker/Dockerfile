@@ -11,11 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone https://github.com/bytedance/LatentSync /workspace/LatentSync
 WORKDIR /workspace/LatentSync
 RUN pip install --no-cache-dir -r requirements.txt
-
-# ─── Download LatentSync 1.6 checkpoints (~5 GB, cached in the image) ─────────
-RUN python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('ByteDance/LatentSync-1.6', local_dir='checkpoints')"
+# NOTE: Checkpoints are NOT baked in — they live on a RunPod Network Volume
+#       mounted at /runpod-volume. The start.sh script creates a symlink at
+#       /workspace/LatentSync/checkpoints → /runpod-volume/LatentSync-checkpoints
+#       Run latentsync-runpod-worker/download_checkpoints.sh ONCE on a GPU pod
+#       that has the volume attached to populate the volume.
 
 ENV LATENTSYNC_DIR=/workspace/LatentSync
 
@@ -28,8 +28,11 @@ COPY latentsync-runpod-worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY latentsync-runpod-worker/handler.py .
+COPY latentsync-runpod-worker/start.sh .
 # Copy the shared inference wrapper from the backend directory
 COPY live-avatar-backend/latentsync_infer.py .
 
+RUN chmod +x /app/start.sh
+
 # ─── Start ────────────────────────────────────────────────────────────────────
-CMD ["python", "-u", "handler.py"]
+CMD ["/app/start.sh"]
