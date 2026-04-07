@@ -209,4 +209,24 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         return {"video_url": video_url}
 
 
+def _warmup_models_on_startup() -> None:
+    """Best-effort model warmup at worker startup.
+
+    This avoids charging the first request for model download/load time,
+    which can trigger execution-time throttling on strict endpoints.
+    """
+    warmup_flag = os.environ.get("WARMUP_MODELS_ON_STARTUP", "1").strip().lower()
+    if warmup_flag in {"0", "false", "no", "off"}:
+        print("[Startup] Model warmup disabled via WARMUP_MODELS_ON_STARTUP")
+        return
+
+    try:
+        print("[Startup] Warming LatentSync models...")
+        _ensure_models_loaded()
+        print("[Startup] Model warmup complete")
+    except Exception as exc:
+        print(f"[Startup] Model warmup failed (worker will stay up): {exc}")
+
+
+_warmup_models_on_startup()
 runpod.serverless.start({"handler": handler})
