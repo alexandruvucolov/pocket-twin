@@ -93,6 +93,21 @@ _download_ckpt "$VOLUME_CHECKPOINTS/whisper/tiny.pt" \
                "$HF_BASE/whisper/tiny.pt" \
                "Whisper (whisper/tiny.pt)"
 
+# VAE — download via huggingface_hub into the volume hf-cache so it is never
+# re-downloaded on subsequent cold starts (AutoencoderKL.from_pretrained uses
+# HF_HOME which we already pointed at /runpod-volume/hf-cache above).
+VAE_MARKER="$HF_HOME/hub/models--stabilityai--sd-vae-ft-mse/blobs"
+if [ -d "$VAE_MARKER" ] && [ -n "$(ls -A "$VAE_MARKER" 2>/dev/null)" ]; then
+    echo "[start.sh] VAE already cached at $HF_HOME"
+else
+    echo "[start.sh] VAE not yet cached. Pre-downloading stabilityai/sd-vae-ft-mse ..."
+    python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('stabilityai/sd-vae-ft-mse')
+print('[start.sh] VAE download complete.')
+" || echo "[start.sh] WARNING: VAE pre-download failed — will retry at inference time."
+fi
+
 # -- 5. Launch handler -----------------------------------------------------------
 echo "[start.sh] Launching handler..."
 exec python -u /app/handler.py
