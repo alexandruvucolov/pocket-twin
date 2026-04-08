@@ -58,6 +58,28 @@ fi
 
 echo "[start.sh] Startup checks complete."
 
-# -- 4. Launch handler -----------------------------------------------------------
+# -- 4. Auto-download whisper checkpoint if missing ------------------------------
+WHISPER_DIR="$VOLUME_CHECKPOINTS/whisper"
+WHISPER_PT="$WHISPER_DIR/tiny.pt"
+HF_WHISPER_URL="https://huggingface.co/ByteDance/LatentSync-1.6/resolve/main/whisper/tiny.pt"
+if [ -f "$WHISPER_PT" ]; then
+    echo "[start.sh] Whisper checkpoint already present: $WHISPER_PT"
+else
+    echo "[start.sh] Whisper checkpoint missing. Downloading from HuggingFace ..."
+    mkdir -p "$WHISPER_DIR"
+    if command -v wget &>/dev/null; then
+        wget -q --show-progress -O "$WHISPER_PT" "$HF_WHISPER_URL"
+    else
+        curl -L --progress-bar -o "$WHISPER_PT" "$HF_WHISPER_URL"
+    fi
+    if [ $? -ne 0 ] || [ ! -s "$WHISPER_PT" ]; then
+        echo "[start.sh] FATAL: Could not download whisper/tiny.pt. Aborting."
+        rm -f "$WHISPER_PT"
+        exit 1
+    fi
+    echo "[start.sh] Whisper checkpoint download complete: $(du -h "$WHISPER_PT" | cut -f1)"
+fi
+
+# -- 5. Launch handler -----------------------------------------------------------
 echo "[start.sh] Launching handler..."
 exec python -u /app/handler.py
