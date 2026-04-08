@@ -58,27 +58,40 @@ fi
 
 echo "[start.sh] Startup checks complete."
 
-# -- 4. Auto-download whisper checkpoint if missing ------------------------------
-WHISPER_DIR="$VOLUME_CHECKPOINTS/whisper"
-WHISPER_PT="$WHISPER_DIR/tiny.pt"
-HF_WHISPER_URL="https://huggingface.co/ByteDance/LatentSync-1.6/resolve/main/whisper/tiny.pt"
-if [ -f "$WHISPER_PT" ]; then
-    echo "[start.sh] Whisper checkpoint already present: $WHISPER_PT"
-else
-    echo "[start.sh] Whisper checkpoint missing. Downloading from HuggingFace ..."
-    mkdir -p "$WHISPER_DIR"
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress -O "$WHISPER_PT" "$HF_WHISPER_URL"
-    else
-        curl -L --progress-bar -o "$WHISPER_PT" "$HF_WHISPER_URL"
+# -- 4. Auto-download checkpoints if missing ------------------------------------
+HF_BASE="https://huggingface.co/ByteDance/LatentSync-1.6/resolve/main"
+
+_download_ckpt() {
+    local dest="$1" url="$2" label="$3"
+    if [ -f "$dest" ] && [ -s "$dest" ]; then
+        echo "[start.sh] $label already present: $(du -h "$dest" | cut -f1)"
+        return 0
     fi
-    if [ $? -ne 0 ] || [ ! -s "$WHISPER_PT" ]; then
-        echo "[start.sh] FATAL: Could not download whisper/tiny.pt. Aborting."
-        rm -f "$WHISPER_PT"
+    echo "[start.sh] $label missing. Downloading from HuggingFace ..."
+    mkdir -p "$(dirname "$dest")"
+    if command -v wget &>/dev/null; then
+        wget -q --show-progress -O "${dest}.tmp" "$url"
+    else
+        curl -L --progress-bar -o "${dest}.tmp" "$url"
+    fi
+    if [ $? -ne 0 ] || [ ! -s "${dest}.tmp" ]; then
+        echo "[start.sh] FATAL: Could not download $label. Aborting."
+        rm -f "${dest}.tmp"
         exit 1
     fi
-    echo "[start.sh] Whisper checkpoint download complete: $(du -h "$WHISPER_PT" | cut -f1)"
-fi
+    mv "${dest}.tmp" "$dest"
+    echo "[start.sh] $label download complete: $(du -h "$dest" | cut -f1)"
+}
+
+# UNet (main LatentSync model, ~6 GB)
+_download_ckpt "$VOLUME_CHECKPOINTS/latentsync_unet.pt" \
+               "$HF_BASE/latentsync_unet.pt" \
+               "UNet (latentsync_unet.pt)"
+
+# Whisper audio encoder (~150 MB)
+_download_ckpt "$VOLUME_CHECKPOINTS/whisper/tiny.pt" \
+               "$HF_BASE/whisper/tiny.pt" \
+               "Whisper (whisper/tiny.pt)"
 
 # -- 5. Launch handler -----------------------------------------------------------
 echo "[start.sh] Launching handler..."
