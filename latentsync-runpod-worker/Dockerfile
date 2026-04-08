@@ -1,7 +1,15 @@
 # ─── Base image ───────────────────────────────────────────────────────────────
-# CUDA 12.8.1 + PyTorch 2.6.0 — required for RTX 5090 (Blackwell / sm_100 kernels)
+# CUDA 12.8.1 + PyTorch 2.6.0 base — we upgrade PyTorch below
 # New RunPod tag format: 1.0.3-cu{cuda}-torch{ver}-ubuntu{os}
 FROM runpod/pytorch:1.0.3-cu1281-torch260-ubuntu2204
+
+# ─── Upgrade PyTorch to 2.7+ for consumer Blackwell (sm_120) support ─────────
+# RTX 5090 / RTX PRO 6000 Blackwell use sm_120.
+# PyTorch 2.6.0 only added datacenter Blackwell (sm_100 / B100/B200).
+# PyTorch 2.7.0 added sm_120 (consumer Blackwell / RTX 50xx series).
+RUN pip install --no-cache-dir --upgrade \
+        torch torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cu128
 
 # ─── System deps ──────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
