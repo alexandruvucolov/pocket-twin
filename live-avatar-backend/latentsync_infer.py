@@ -328,6 +328,23 @@ def _load_models() -> bool:
             except Exception as dc_exc:
                 logger.info("LatentSync: DeepCache not available (%s), skipping", dc_exc)
 
+            # ── xformers memory-efficient attention (~20% faster per step) ──
+            try:
+                pipe.enable_xformers_memory_efficient_attention()
+                logger.info("LatentSync: xformers memory-efficient attention enabled")
+            except Exception as xf_exc:
+                logger.info("LatentSync: xformers not available (%s), skipping", xf_exc)
+
+            # ── torch.compile on UNet (~20-40% faster after warmup) ─────────
+            try:
+                pipe.unet = torch.compile(
+                    pipe.unet, mode="reduce-overhead", fullgraph=False
+                )
+                logger.info("LatentSync: torch.compile enabled on UNet")
+            except Exception as tc_exc:
+                logger.info("LatentSync: torch.compile not available (%s), skipping", tc_exc)
+
+
             _pipeline = pipe
             _models_available = True
             _last_synthesize_reason = ""

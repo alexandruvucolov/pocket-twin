@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir --upgrade \
         torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cu128
 
+# ─── xformers for memory-efficient attention (~20% faster inference) ──────────
+RUN pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu128
+
 # ─── System deps ──────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ffmpeg libgl1 libglib2.0-0 && \
