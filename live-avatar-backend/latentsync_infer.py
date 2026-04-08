@@ -227,6 +227,43 @@ def _load_models() -> bool:
                             break
 
                 if fallback is None:
+                    # Auto-heal missing whisper checkpoints by downloading from HF.
+                    try:
+                        from huggingface_hub import hf_hub_download  # noqa: PLC0415
+
+                        whisper_dir.mkdir(parents=True, exist_ok=True)
+                        download_candidates = [preferred_whisper, "small.pt", "tiny.pt"]
+                        seen = set()
+                        for candidate in download_candidates:
+                            if candidate in seen:
+                                continue
+                            seen.add(candidate)
+                            try:
+                                downloaded_path = hf_hub_download(
+                                    repo_id="ByteDance/LatentSync-1.6",
+                                    filename=f"whisper/{candidate}",
+                                    local_dir=str(LATENTSYNC_DIR / "checkpoints"),
+                                )
+                                if Path(downloaded_path).exists():
+                                    fallback = Path(downloaded_path)
+                                    logger.warning(
+                                        "LatentSync: downloaded missing whisper checkpoint %s",
+                                        downloaded_path,
+                                    )
+                                    break
+                            except Exception as dl_exc:
+                                logger.warning(
+                                    "LatentSync: failed to download whisper/%s: %s",
+                                    candidate,
+                                    dl_exc,
+                                )
+                    except Exception as import_exc:
+                        logger.warning(
+                            "LatentSync: huggingface_hub unavailable for whisper download: %s",
+                            import_exc,
+                        )
+
+                if fallback is None:
                     _last_synthesize_reason = (
                         f"Missing whisper checkpoint: {preferred_path}"
                     )
