@@ -14,8 +14,14 @@ RUN mkdir -p /workspace && \
 WORKDIR /workspace/LatentSync
 # Install LatentSync deps but skip torch/torchvision/torchaudio lines to avoid
 # downgrading from the base image's cu128 build to LatentSync's pinned cu121 build.
-RUN grep -vE "^torch(vision|audio)?[=><!]|^--extra-index-url" requirements.txt \
+# Also patch packages that don't have Python 3.12 wheels at their pinned version:
+#   mediapipe==0.10.11 → >=0.10.13  (first release with py3.12 wheels)
+#   decord==0.6.0      → >=0.6.0    (no-pin to pick up any newer py3.12 build)
+RUN grep -vE "^torch(vision|audio)?[=><!]|^--extra-index-url|^mediapipe|^decord" \
+            requirements.txt \
         > /tmp/latentsync_requirements_notorch.txt && \
+    echo "mediapipe>=0.10.13" >> /tmp/latentsync_requirements_notorch.txt && \
+    echo "decord>=0.6.0" >> /tmp/latentsync_requirements_notorch.txt && \
     pip install --no-cache-dir -r /tmp/latentsync_requirements_notorch.txt
 # NOTE: Checkpoints are NOT baked in — they live on a RunPod Network Volume
 #       mounted at /runpod-volume. The start.sh script creates a symlink at
