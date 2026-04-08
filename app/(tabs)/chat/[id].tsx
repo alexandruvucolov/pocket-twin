@@ -85,12 +85,12 @@ export default function ChatScreen() {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
-
-  const videoPlayer = useVideoPlayer(null, (player) => {
-    player.loop = true;
-    player.muted = true;
-    player.play();
-  });
+  const videoPlayer = useVideoPlayer(null);
+  const [isResponseVideo, setIsResponseVideo] = useState(false);
+  const responseVideoResolverRef = useRef<(() => void) | null>(null);
+  const responseVideoSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const [inputText, setInputText] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -179,12 +179,15 @@ export default function ChatScreen() {
   useEffect(() => {
     const nextVideoUrl = avatar?.videoUrl ?? null;
     setDisplayedVideoUrl(nextVideoUrl);
-    if (!nextVideoUrl) return;
-    videoPlayer.loop = true;
-    videoPlayer.muted = true;
-    videoPlayer.replace(nextVideoUrl);
+  }, [avatar?.videoUrl]);
+
+  useEffect(() => {
+    if (!displayedVideoUrl) return;
+    videoPlayer.loop = !isResponseVideo;
+    videoPlayer.muted = !isResponseVideo;
+    videoPlayer.replace(displayedVideoUrl);
     videoPlayer.play();
-  }, [avatar?.videoUrl, videoPlayer]);
+  }, [displayedVideoUrl, isResponseVideo, videoPlayer]);
 
   const stopVoicePlayback = useCallback(() => {
     ttsPlayer.pause();
@@ -820,11 +823,8 @@ export default function ChatScreen() {
     (videoUrl: string): Promise<void> => {
       return new Promise<void>((resolve) => {
         isPlayingResponseRef.current = true;
+        setIsResponseVideo(true);
         setDisplayedVideoUrl(videoUrl);
-        videoPlayer.muted = false;
-        videoPlayer.loop = false;
-        videoPlayer.replace(videoUrl);
-        videoPlayer.play();
 
         let hasStartedPlaying = false;
         let resolved = false;
@@ -833,18 +833,14 @@ export default function ChatScreen() {
           if (resolved) return;
           resolved = true;
           sub.remove();
-          clearTimeout(safetyTimer);
           isPlayingResponseRef.current = false;
-          videoPlayer.muted = true;
-          videoPlayer.loop = true;
+          setIsResponseVideo(false);
           const idleUrl = avatar?.videoUrl ?? null;
           setDisplayedVideoUrl(idleUrl);
-          if (idleUrl) {
-            videoPlayer.replace(idleUrl);
-            videoPlayer.play();
-          }
           resolve();
         };
+
+        responseVideoResolverRef.current = resolveOnce;
 
         const sub = videoPlayer.addListener("statusChange", (event: any) => {
           const status = event.status as string;
@@ -862,7 +858,14 @@ export default function ChatScreen() {
         });
 
         // Safety: always resolve after 90 s
-        const safetyTimer = setTimeout(resolveOnce, 90_000);
+        if (responseVideoSafetyTimerRef.current) {
+          clearTimeout(responseVideoSafetyTimerRef.current);
+        }
+        responseVideoSafetyTimerRef.current = setTimeout(() => {
+          resolveOnce();
+          responseVideoResolverRef.current = null;
+          responseVideoSafetyTimerRef.current = null;
+        }, 90_000);
       });
     },
     [avatar?.videoUrl, videoPlayer],

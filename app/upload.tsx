@@ -20,6 +20,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useVideoPlayer, VideoView } from "expo-video";
 import { Colors } from "@/constants/colors";
 import { useAvatars } from "@/context/AvatarContext";
 import { useAuth } from "@/context/AuthContext";
@@ -33,7 +34,6 @@ import {
   getDefaultLivePortraitDrivingVideoUrl,
   isLivePortraitConfigured,
 } from "@/lib/liveportrait";
-import { useVideoPlayer, VideoView } from "expo-video";
 
 const { width, height } = Dimensions.get("window");
 
@@ -55,18 +55,16 @@ export default function UploadScreen() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const cameraRef = useRef<CameraView | null>(null);
-
   const videoPlayer = useVideoPlayer(null, (player) => {
     player.loop = true;
   });
 
-  // Update player source when preview generation resolves
   React.useEffect(() => {
     if (videoUrl) {
       videoPlayer.replace(videoUrl);
       videoPlayer.play();
     }
-  }, [videoUrl]);
+  }, [videoUrl, videoPlayer]);
 
   React.useEffect(() => {
     if (Platform.OS !== "android") return;

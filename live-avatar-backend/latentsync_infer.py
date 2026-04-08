@@ -207,13 +207,41 @@ def _load_models() -> bool:
                 OmegaConf.to_container(config.model, resolve=True)
                 .get("cross_attention_dim", 384)
             )
-            whisper_name = "tiny.pt" if cross_attn_dim <= 384 else "small.pt"
-            whisper_path = str(LATENTSYNC_DIR / "checkpoints" / "whisper" / whisper_name)
-            if not Path(whisper_path).exists():
-                _last_synthesize_reason = f"Missing whisper checkpoint: {whisper_path}"
-                logger.warning("LatentSync: whisper checkpoint not found: %s", whisper_path)
-                _models_available = False
-                return False
+            preferred_whisper = "tiny.pt" if cross_attn_dim <= 384 else "small.pt"
+            whisper_dir = LATENTSYNC_DIR / "checkpoints" / "whisper"
+            preferred_path = whisper_dir / preferred_whisper
+
+            if preferred_path.exists():
+                whisper_path = str(preferred_path)
+            else:
+                fallback = None
+                if whisper_dir.is_dir():
+                    for candidate in ("small.pt", "tiny.pt"):
+                        candidate_path = whisper_dir / candidate
+                        if candidate_path.exists():
+                            fallback = candidate_path
+                            break
+                    if fallback is None:
+                        for candidate_path in sorted(whisper_dir.glob("*.pt")):
+                            fallback = candidate_path
+                            break
+
+                if fallback is None:
+                    _last_synthesize_reason = (
+                        f"Missing whisper checkpoint: {preferred_path}"
+                    )
+                    logger.warning(
+                        "LatentSync: whisper checkpoint not found: %s", preferred_path
+                    )
+                    _models_available = False
+                    return False
+
+                whisper_path = str(fallback)
+                logger.warning(
+                    "LatentSync: preferred whisper %s missing, falling back to %s",
+                    preferred_whisper,
+                    whisper_path,
+                )
 
             audio_encoder = Audio2Feature(
                 model_path=whisper_path,
