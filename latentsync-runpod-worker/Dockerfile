@@ -1,6 +1,6 @@
 # ─── Base image ───────────────────────────────────────────────────────────────
-# CUDA 12.8 + PyTorch 2.6 — required for RTX 5090 (Blackwell / sm_100 kernels)
-FROM runpod/pytorch:2.6.0-py3.11-cuda12.8.1-devel-ubuntu22.04
+# CUDA 12.8.1 + PyTorch 2.7.1 — required for RTX 5090 (Blackwell / sm_100 kernels)
+FROM runpod/pytorch:1.0.3-cu1281-torch271-ubuntu2204
 
 # ─── System deps ──────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Reinstall with cu128 to support RTX 5090 and other Blackwell GPUs.
 RUN pip install --no-cache-dir --force-reinstall \
         torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
-        --index-url https://download.pytorch.org/whl/cu128
+        --index-url https://download.pytorch.org/whl/cu128 && \
+    python -c "import torch; print('torch', torch.__version__, 'CUDA', torch.version.cuda, 'sm_100 support:', any('sm_100' in a for a in torch.cuda.get_arch_list()) if torch.cuda.is_available() else 'build-only-check-skipped')"
 # NOTE: Checkpoints are NOT baked in — they live on a RunPod Network Volume
 #       mounted at /runpod-volume. The start.sh script creates a symlink at
 #       /workspace/LatentSync/checkpoints → /runpod-volume/LatentSync-checkpoints
