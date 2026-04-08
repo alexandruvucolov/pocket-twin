@@ -29,9 +29,8 @@ jobs:
                   context: .
                   file: latentsync-runpod-worker/Dockerfile
                   push: true
+                  no-cache: true
                   tags: |
                       alexandruvucolov/pocket-twin-latentsync:v2
                       alexandruvucolov/pocket-twin-latentsync:v3
                       alexandruvucolov/pocket-twin-latentsync:latest
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max

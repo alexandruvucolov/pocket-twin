@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # ─── Clone LatentSync ─────────────────────────────────────────────────────────
-RUN git clone https://github.com/bytedance/LatentSync /workspace/LatentSync
+RUN mkdir -p /workspace && \
+    git clone https://github.com/bytedance/LatentSync /workspace/LatentSync
 WORKDIR /workspace/LatentSync
 # Install LatentSync deps but skip torch/torchvision/torchaudio lines to avoid
 # downgrading from the base image's cu128 build to LatentSync's pinned cu121 build.
