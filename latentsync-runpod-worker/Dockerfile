@@ -1,6 +1,7 @@
 # ─── Base image ───────────────────────────────────────────────────────────────
-# CUDA 12.8.1 + PyTorch 2.7.1 — required for RTX 5090 (Blackwell / sm_100 kernels)
-FROM runpod/pytorch:1.0.3-cu1281-torch271-ubuntu2204
+# CUDA 12.8.1 + PyTorch 2.6.0 — required for RTX 5090 (Blackwell / sm_100 kernels)
+# New RunPod tag format: 1.0.3-cu{cuda}-torch{ver}-ubuntu{os}
+FROM runpod/pytorch:1.0.3-cu1281-torch260-ubuntu2204
 
 # ─── System deps ──────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,13 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ─── Clone LatentSync ─────────────────────────────────────────────────────────
 RUN git clone https://github.com/bytedance/LatentSync /workspace/LatentSync
 WORKDIR /workspace/LatentSync
-RUN pip install --no-cache-dir -r requirements.txt
-# LatentSync pins torch==2.5.1+cu121 which has no Blackwell (sm_100) kernels.
-# Reinstall with cu128 to support RTX 5090 and other Blackwell GPUs.
-RUN pip install --no-cache-dir --force-reinstall \
-        torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
-        --index-url https://download.pytorch.org/whl/cu128 && \
-    python -c "import torch; print('torch', torch.__version__, 'CUDA', torch.version.cuda, 'sm_100 support:', any('sm_100' in a for a in torch.cuda.get_arch_list()) if torch.cuda.is_available() else 'build-only-check-skipped')"
+# Install LatentSync deps but skip torch/torchvision/torchaudio lines to avoid
+# downgrading from the base image's cu128 build to LatentSync's pinned cu121 build.
+RUN grep -vE "^torch(vision|audio)?[=><!]|^--extra-index-url" requirements.txt \
+        > /tmp/latentsync_requirements_notorch.txt && \
+    pip install --no-cache-dir -r /tmp/latentsync_requirements_notorch.txt
 # NOTE: Checkpoints are NOT baked in — they live on a RunPod Network Volume
 #       mounted at /runpod-volume. The start.sh script creates a symlink at
 #       /workspace/LatentSync/checkpoints → /runpod-volume/LatentSync-checkpoints
