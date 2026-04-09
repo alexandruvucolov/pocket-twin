@@ -405,6 +405,7 @@ def synthesize(
     prep: "AvatarPrep",
     audio_path: str,
     fps: int = 25,
+    num_inference_steps: int = 10,
 ) -> list[np.ndarray]:
     """Generate lip-synced frames for the given audio file.
 
@@ -453,7 +454,7 @@ def synthesize(
                 video_path=prep.avatar_video_path,
                 audio_path=audio_path,
                 video_out_path=tmp_out,
-                num_inference_steps=10,
+                num_inference_steps=num_inference_steps,
                 guidance_scale=1.5,
                 weight_dtype=torch.float16,
                 width=_infer_width,

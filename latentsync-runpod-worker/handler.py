@@ -102,7 +102,7 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     source_image_mime_type: str = job_input.get("source_image_mime_type", "image/jpeg")
     audio_base64: str | None = job_input.get("audio_base64")
     audio_url: str | None = job_input.get("audio_url")
-    num_inference_steps: int = int(job_input.get("num_inference_steps", 10))
+    num_inference_steps: int = int(job_input.get("num_inference_steps", 6))
     bbox_shift: int = int(job_input.get("bbox_shift", 0))
 
     if not source_image_url and not source_image_base64:
@@ -166,7 +166,7 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         if prep is None:
             return {"error": "LatentSync prepare_avatar failed — models may not be loaded."}
 
-        frames: list[np.ndarray] = lsi.synthesize(prep, str(audio_path), fps=25)
+        frames: list[np.ndarray] = lsi.synthesize(prep, str(audio_path), fps=25, num_inference_steps=num_inference_steps)
         if not frames:
             return {"error": "Synthesis returned no frames."}
 
