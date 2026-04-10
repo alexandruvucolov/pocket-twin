@@ -50,6 +50,11 @@ def _add_to_path() -> None:
 _pipeline = None
 _models_loaded = False
 
+# ---------------------------------------------------------------------------
+# Per-worker image cache — avatar image doesn't change, no need to re-download
+# ---------------------------------------------------------------------------
+_image_cache: dict[str, bytes] = {}  # url -> raw bytes
+
 
 def _ensure_models_loaded() -> None:
     global _pipeline, _models_loaded
@@ -128,12 +133,18 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         image_path = tmpdir / f"source{image_ext}"
 
         if source_image_url:
-            r = requests.get(source_image_url, timeout=30)
-            r.raise_for_status()
-            image_path.write_bytes(r.content)
+            if source_image_url in _image_cache:
+                image_path.write_bytes(_image_cache[source_image_url])
+                print(f"[TIMING] image_decode (cache hit): {_time.monotonic()-_t0:.2f}s")
+            else:
+                r = requests.get(source_image_url, timeout=30)
+                r.raise_for_status()
+                _image_cache[source_image_url] = r.content
+                image_path.write_bytes(r.content)
+                print(f"[TIMING] image_decode (cache miss): {_time.monotonic()-_t0:.2f}s")
         else:
             image_path.write_bytes(base64.b64decode(source_image_base64))  # type: ignore[arg-type]
-        print(f"[TIMING] image_decode: {_time.monotonic()-_t0:.2f}s")
+            print(f"[TIMING] image_decode (base64): {_time.monotonic()-_t0:.2f}s")
 
         # ── Decode / download audio ─────────────────────────────────────────
         _t0 = _time.monotonic()

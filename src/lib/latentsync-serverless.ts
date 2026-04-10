@@ -76,7 +76,7 @@ export async function submitLatentSyncJob(
         source_image_base64: params.sourceImageBase64,
         source_image_mime_type: params.sourceImageMimeType,
         audio_base64: params.audioBase64,
-        num_inference_steps: params.numInferenceSteps ?? 10,
+        num_inference_steps: params.numInferenceSteps ?? 6,
         bbox_shift: params.bboxShift ?? 0,
       },
     }),
@@ -133,7 +133,7 @@ export async function pollLatentSyncJob(
   const baseUrl = getBaseUrl();
 
   const maxWaitMs = options?.maxWaitMs ?? 900_000; // 15 min — handles cold start image pull
-  const pollIntervalMs = options?.pollIntervalMs ?? 1_500;
+  const pollIntervalMs = options?.pollIntervalMs ?? 750;
   const expectedMs = options?.expectedGenerationMs ?? 30_000;
 
   const startTime = Date.now();
