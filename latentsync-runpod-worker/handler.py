@@ -116,10 +116,14 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         print(f"[Handler] Model loading failed: {exc}")
         return {"error": f"Model loading failed: {exc}"}
 
+    import time as _time
+    _t_total = _time.monotonic()
+
     with tempfile.TemporaryDirectory() as tmpdir_str:
         tmpdir = Path(tmpdir_str)
 
         # ── Decode / download source image ─────────────────────────────────
+        _t0 = _time.monotonic()
         image_ext = ".png" if "png" in source_image_mime_type else ".jpg"
         image_path = tmpdir / f"source{image_ext}"
 
@@ -129,8 +133,10 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
             image_path.write_bytes(r.content)
         else:
             image_path.write_bytes(base64.b64decode(source_image_base64))  # type: ignore[arg-type]
+        print(f"[TIMING] image_decode: {_time.monotonic()-_t0:.2f}s")
 
         # ── Decode / download audio ─────────────────────────────────────────
+        _t0 = _time.monotonic()
         audio_path = tmpdir / "audio.mp3"
 
         if audio_url:
@@ -139,21 +145,13 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
             audio_path.write_bytes(r.content)
         else:
             audio_path.write_bytes(base64.b64decode(audio_base64))  # type: ignore[arg-type]
+        print(f"[TIMING] audio_decode: {_time.monotonic()-_t0:.2f}s")
 
         # ── Run LatentSync inference ────────────────────────────────────────
         _add_to_path()
         import cv2  # type: ignore[import-untyped]
         import numpy as np  # type: ignore[import-untyped]
         import latentsync_infer as lsi  # type: ignore[import-untyped]
-
-        # Override inference steps for faster results
-        original_steps = None
-        try:
-            import latentsync_infer as lsi_mod
-            if hasattr(lsi_mod, "_pipeline") and lsi_mod._pipeline is not None:
-                original_steps = getattr(lsi_mod._pipeline, "num_inference_steps", None)
-        except Exception:
-            pass
 
         img_bgr = cv2.imread(str(image_path))
         if img_bgr is None:
@@ -162,15 +160,20 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         work_dir = str(tmpdir / "work")
         os.makedirs(work_dir, exist_ok=True)
 
+        _t0 = _time.monotonic()
         prep = lsi.prepare_avatar(img_bgr, "serverless_job", work_dir, bbox_shift=bbox_shift)
+        print(f"[TIMING] prepare_avatar: {_time.monotonic()-_t0:.2f}s")
         if prep is None:
             return {"error": "LatentSync prepare_avatar failed — models may not be loaded."}
 
+        _t0 = _time.monotonic()
         frames: list[np.ndarray] = lsi.synthesize(prep, str(audio_path), fps=25, num_inference_steps=num_inference_steps)
+        print(f"[TIMING] synthesize ({num_inference_steps} steps, {len(frames)} frames): {_time.monotonic()-_t0:.2f}s")
         if not frames:
             return {"error": "Synthesis returned no frames."}
 
         # ── Write raw video ─────────────────────────────────────────────────
+        _t0 = _time.monotonic()
         h, w = frames[0].shape[:2]
         raw_video_path = str(tmpdir / "raw.mp4")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -178,8 +181,10 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         for frame in frames:
             writer.write(frame)
         writer.release()
+        print(f"[TIMING] write_frames: {_time.monotonic()-_t0:.2f}s")
 
         # ── Mux audio into video ────────────────────────────────────────────
+        _t0 = _time.monotonic()
         final_path = str(tmpdir / "output.mp4")
         try:
             subprocess.run(
@@ -203,9 +208,13 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
             # Fallback: return raw video without audio
             print(f"[Handler] ffmpeg mux failed: {e.stderr.decode()[:500]}; returning raw video")
             final_path = raw_video_path
+        print(f"[TIMING] ffmpeg_mux: {_time.monotonic()-_t0:.2f}s")
 
         # ── Upload & return ─────────────────────────────────────────────────
+        _t0 = _time.monotonic()
         video_url = _upload_video(final_path)
+        print(f"[TIMING] upload: {_time.monotonic()-_t0:.2f}s")
+        print(f"[TIMING] TOTAL: {_time.monotonic()-_t_total:.2f}s")
         return {"video_url": video_url}
 
 
