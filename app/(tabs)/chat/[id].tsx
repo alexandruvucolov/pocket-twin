@@ -86,6 +86,11 @@ export default function ChatScreen() {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
+  // 'preparing' = TTS/image fetch, 'queued' = waiting for worker, 'running' = inference
+  const [generationPhase, setGenerationPhase] = useState<'preparing' | 'queued' | 'running'>('preparing');
+  const [queueElapsedSec, setQueueElapsedSec] = useState(0);
+  const generationPhaseRef = useRef<'preparing' | 'queued' | 'running'>('preparing');
+  const queueTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const videoPlayer = useVideoPlayer(null);
   const [isResponseVideo, setIsResponseVideo] = useState(false);
   const responseVideoResolverRef = useRef<(() => void) | null>(null);
@@ -896,6 +901,15 @@ export default function ChatScreen() {
 
       setIsGenerating(true);
       setGenerationProgress(0);
+      setGenerationPhase('preparing');
+      generationPhaseRef.current = 'preparing';
+
+      const stopQueueTimer = () => {
+        if (queueTimerRef.current) {
+          clearInterval(queueTimerRef.current);
+          queueTimerRef.current = null;
+        }
+      };
 
       try {
         // 1. ElevenLabs TTS → base64 audio
@@ -922,7 +936,7 @@ export default function ChatScreen() {
             : "image/jpeg";
         }
 
-        // 3. Submit RunPod job
+        // 3. Submit RunPod job — enter 'queued' phase, start elapsed timer
         setGenerationProgress(20);
         const { id: jobId } = await submitLatentSyncJob({
           sourceImageUrl,
@@ -930,16 +944,29 @@ export default function ChatScreen() {
           sourceImageMimeType,
           audioBase64,
         });
+        setGenerationPhase('queued');
+        generationPhaseRef.current = 'queued';
+        setQueueElapsedSec(0);
+        const queueStart = Date.now();
+        queueTimerRef.current = setInterval(() => {
+          setQueueElapsedSec(Math.round((Date.now() - queueStart) / 1000));
+        }, 1000);
 
-        // 4. Poll until complete
+        // 4. Poll until complete — switch to 'running' when IN_PROGRESS
         const videoUrl = await pollLatentSyncJob(
           jobId,
           (pct) => {
+            if (pct >= 10 && generationPhaseRef.current !== 'running') {
+              setGenerationPhase('running');
+              generationPhaseRef.current = 'running';
+              stopQueueTimer();
+            }
             setGenerationProgress(20 + Math.round(pct * 0.75));
           },
           { expectedGenerationMs: 20_000 },
         );
 
+        stopQueueTimer();
         setGenerationProgress(100);
         setIsGenerating(false);
 
@@ -947,6 +974,7 @@ export default function ChatScreen() {
         await waitForResponseVideoPlayback(videoUrl);
       } catch (err) {
         console.warn("[LatentSync] generation failed:", err);
+        stopQueueTimer();
         setIsGenerating(false);
         setGenerationProgress(0);
         await speakReplyAndWait(text);
@@ -981,7 +1009,7 @@ export default function ChatScreen() {
         style={[styles.avatarPanel, { opacity: isGenerating ? 1 : pulseAnim }]}
       >
         {isGenerating ? (
-          /* ── Loading overlay: blurred avatar + progress % ── */
+          /* ── Loading overlay: blurred avatar + phase-aware status ── */
           <>
             <Image
               source={{ uri: avatar.imageUri }}
@@ -989,16 +1017,29 @@ export default function ChatScreen() {
               blurRadius={18}
             />
             <View style={styles.generatingOverlay}>
-              <Text style={styles.generatingPercent}>
-                {generationProgress}%
-              </Text>
-              <Text style={styles.generatingLabel}>
-                {generationProgress < 25
-                  ? "Waking worker… (first reply ~3 min)"
-                  : generationProgress < 40
-                    ? "Loading AI model…"
-                    : "Generating response…"}
-              </Text>
+              {generationPhase === 'queued' ? (
+                /* Spinner + elapsed timer while waiting for worker */
+                <>
+                  <ActivityIndicator color={Colors.white} size="large" />
+                  <Text style={styles.generatingPhaseLabel}>Waking worker…</Text>
+                  <Text style={styles.generatingElapsed}>{queueElapsedSec}s</Text>
+                  <Text style={styles.generatingHint}>First reply can take 3-5 min</Text>
+                </>
+              ) : generationPhase === 'running' ? (
+                /* Progress % during actual inference */
+                <>
+                  <Text style={styles.generatingPercent}>
+                    {generationProgress}%
+                  </Text>
+                  <Text style={styles.generatingLabel}>Generating response…</Text>
+                </>
+              ) : (
+                /* Preparing phase: TTS + image fetch */
+                <>
+                  <ActivityIndicator color={Colors.white} size="large" />
+                  <Text style={styles.generatingLabel}>Preparing…</Text>
+                </>
+              )}
             </View>
           </>
         ) : displayedVideoUrl ? (
@@ -1121,14 +1162,16 @@ export default function ChatScreen() {
               typeof item.createdAt === "number" &&
               item.createdAt >= sessionStartedAtRef.current &&
               (index === 0 ||
-                ((visibleChatMessages[index - 1]?.createdAt ?? 0) <
-                  sessionStartedAtRef.current));
+                (visibleChatMessages[index - 1]?.createdAt ?? 0) <
+                  sessionStartedAtRef.current);
             return (
               <>
                 {isFirstNewMessage && index > 0 && (
                   <View style={styles.sessionDivider}>
                     <View style={styles.sessionDividerLine} />
-                    <Text style={styles.sessionDividerText}>New conversation</Text>
+                    <Text style={styles.sessionDividerText}>
+                      New conversation
+                    </Text>
                     <View style={styles.sessionDividerLine} />
                   </View>
                 )}
@@ -1416,6 +1459,28 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0,0,0,0.5)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
+  },
+  generatingPhaseLabel: {
+    color: Colors.white,
+    fontSize: 18,
+    fontWeight: "700",
+    marginTop: 12,
+    textShadowColor: "rgba(0,0,0,0.6)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  generatingElapsed: {
+    color: Colors.white,
+    fontSize: 48,
+    fontWeight: "900",
+    textShadowColor: "rgba(0,0,0,0.7)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  generatingHint: {
+    color: "rgba(255,255,255,0.65)",
+    fontSize: 13,
+    fontWeight: "500",
   },
   avatarPanelRtcView: {
     backgroundColor: "#000",
