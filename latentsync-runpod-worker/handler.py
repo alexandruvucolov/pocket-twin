@@ -102,6 +102,11 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     """Entry point called by RunPod for each request."""
     job_input: dict[str, Any] = job.get("input", {})
 
+    # Warmup-only request — just confirms the worker is alive, no inference.
+    if job_input.get("warmup"):
+        print("[Handler] Warmup ping received — worker is ready.")
+        return {"status": "warmed"}
+
     source_image_url: str | None = job_input.get("source_image_url")
     source_image_base64: str | None = job_input.get("source_image_base64")
     source_image_mime_type: str = job_input.get("source_image_mime_type", "image/jpeg")

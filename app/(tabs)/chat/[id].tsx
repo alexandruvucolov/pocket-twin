@@ -30,6 +30,7 @@ import {
   isLatentSyncServerlessConfigured,
   submitLatentSyncJob,
   pollLatentSyncJob,
+  warmupLatentSyncWorker,
 } from "../../../src/lib/latentsync-serverless";
 import { transcribeAudio } from "../../../src/lib/openai";
 import { textToSpeech, textToSpeechBase64 } from "../../../src/lib/elevenlabs";
@@ -88,9 +89,9 @@ export default function ChatScreen() {
   const videoPlayer = useVideoPlayer(null);
   const [isResponseVideo, setIsResponseVideo] = useState(false);
   const responseVideoResolverRef = useRef<(() => void) | null>(null);
-  const responseVideoSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const responseVideoSafetyTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
 
   const [inputText, setInputText] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -398,8 +399,17 @@ export default function ChatScreen() {
     scrollToLatest,
   ]);
 
+  // Track when this screen session started so we can show a divider between
+  // old Firestore messages and new messages sent in this session.
+  const sessionStartedAtRef = useRef(Date.now());
+
   useFocusEffect(
     useCallback(() => {
+      // Fire a warmup ping so the RunPod worker starts booting before the user
+      // sends their first message — reduces 22%-stuck cold-start perception.
+      if (isLatentSyncServerlessConfigured()) {
+        warmupLatentSyncWorker().catch(() => undefined);
+      }
       return scrollToLatest(false);
     }, [chatMessages.length, composerHeight, scrollToLatest]),
   );
@@ -927,7 +937,7 @@ export default function ChatScreen() {
           (pct) => {
             setGenerationProgress(20 + Math.round(pct * 0.75));
           },
-          { expectedGenerationMs: 120_000 },
+          { expectedGenerationMs: 20_000 },
         );
 
         setGenerationProgress(100);
@@ -984,7 +994,7 @@ export default function ChatScreen() {
               </Text>
               <Text style={styles.generatingLabel}>
                 {generationProgress < 25
-                  ? "Starting worker…"
+                  ? "Waking worker… (first reply ~3 min)"
                   : generationProgress < 40
                     ? "Loading AI model…"
                     : "Generating response…"}
@@ -1104,38 +1114,57 @@ export default function ChatScreen() {
               onLayout={handleFooterLayout}
             />
           }
-          renderItem={({ item }) => (
-            <View
-              style={[
-                styles.bubble,
-                item.role === "user" ? styles.bubbleUser : styles.bubbleBot,
-              ]}
-            >
-              {item.role === "avatar" && (
-                <Image
-                  source={{ uri: avatar.imageUri }}
-                  style={styles.bubbleAvatar}
-                />
-              )}
-              <View
-                style={[
-                  styles.bubbleText,
-                  item.role === "user"
-                    ? styles.bubbleTextUser
-                    : styles.bubbleTextBot,
-                ]}
-              >
-                <Text
+          renderItem={({ item, index }) => {
+            // Show a "New conversation" divider before the first message
+            // that was sent in this app session.
+            const isFirstNewMessage =
+              typeof item.createdAt === "number" &&
+              item.createdAt >= sessionStartedAtRef.current &&
+              (index === 0 ||
+                ((visibleChatMessages[index - 1]?.createdAt ?? 0) <
+                  sessionStartedAtRef.current));
+            return (
+              <>
+                {isFirstNewMessage && index > 0 && (
+                  <View style={styles.sessionDivider}>
+                    <View style={styles.sessionDividerLine} />
+                    <Text style={styles.sessionDividerText}>New conversation</Text>
+                    <View style={styles.sessionDividerLine} />
+                  </View>
+                )}
+                <View
                   style={[
-                    styles.bubbleMsg,
-                    item.role === "user" && styles.bubbleMsgUser,
+                    styles.bubble,
+                    item.role === "user" ? styles.bubbleUser : styles.bubbleBot,
                   ]}
                 >
-                  {item.text}
-                </Text>
-              </View>
-            </View>
-          )}
+                  {item.role === "avatar" && (
+                    <Image
+                      source={{ uri: avatar.imageUri }}
+                      style={styles.bubbleAvatar}
+                    />
+                  )}
+                  <View
+                    style={[
+                      styles.bubbleText,
+                      item.role === "user"
+                        ? styles.bubbleTextUser
+                        : styles.bubbleTextBot,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.bubbleMsg,
+                        item.role === "user" && styles.bubbleMsgUser,
+                      ]}
+                    >
+                      {item.text}
+                    </Text>
+                  </View>
+                </View>
+              </>
+            );
+          }}
           ListEmptyComponent={
             chatMessages.length === 0 ? (
               <View style={styles.emptyChat}>
@@ -1610,6 +1639,15 @@ const styles = StyleSheet.create({
   },
   bubbleMsg: { color: Colors.text, fontSize: 15, lineHeight: 20 },
   bubbleMsgUser: { color: Colors.white },
+  sessionDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginVertical: 16,
+    marginHorizontal: 16,
+    gap: 8,
+  },
+  sessionDividerLine: { flex: 1, height: 1, backgroundColor: Colors.border },
+  sessionDividerText: { color: Colors.textSecondary, fontSize: 12 },
   emptyChat: { alignItems: "center", paddingTop: 24, gap: 8 },
   emptyChatEmoji: { fontSize: 36 },
   emptyChatText: { color: Colors.textSecondary, fontSize: 15 },

@@ -43,6 +43,27 @@ export function isLatentSyncServerlessConfigured(): boolean {
   );
 }
 
+/**
+ * Fire a lightweight warmup job to wake a cold RunPod worker.
+ * Call this when the chat screen gains focus — before the user sends anything.
+ * Safe to ignore errors (best-effort).
+ */
+export async function warmupLatentSyncWorker(): Promise<void> {
+  if (!isLatentSyncServerlessConfigured()) return;
+  try {
+    await fetch(`${getBaseUrl()}/${getEndpointId()}/run`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${getApiKey()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ input: { warmup: true } }),
+    });
+  } catch {
+    // Warmup is best-effort — never block the UI
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Job submission
 // ---------------------------------------------------------------------------
