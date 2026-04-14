@@ -87,6 +87,22 @@ def _add_latentsync_to_path() -> None:
         sys.path.insert(0, ls_str)
 
 
+def _center_crop_square(frame: np.ndarray) -> np.ndarray:
+    """Center-crop a frame to square using the shorter side.
+
+    This preserves the face aspect ratio before resizing to 512×512.
+    Without this, portrait selfies (e.g. 3024×4032) get horizontally
+    stretched when squashed directly to 512×512.
+    """
+    h, w = frame.shape[:2]
+    if h == w:
+        return frame
+    size = min(h, w)
+    y0 = (h - size) // 2
+    x0 = (w - size) // 2
+    return frame[y0 : y0 + size, x0 : x0 + size]
+
+
 def _create_looping_video(
     source_frame_bgr: np.ndarray,
     out_path: str,
@@ -100,11 +116,14 @@ def _create_looping_video(
     Returns True on success.
     """
     num_frames = max(1, int(fps * duration_secs))
-    h, w = source_frame_bgr.shape[:2]
+
+    # Center-crop to square first so portrait selfies aren't horizontally
+    # stretched when resized to the pipeline's 512×512 square input.
+    frame_cropped = _center_crop_square(source_frame_bgr)
 
     # Resize to pipeline expected dimensions
     frame_resized = cv2.resize(
-        source_frame_bgr, (_infer_width, _infer_height), interpolation=cv2.INTER_LANCZOS4
+        frame_cropped, (_infer_width, _infer_height), interpolation=cv2.INTER_LANCZOS4
     )
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
