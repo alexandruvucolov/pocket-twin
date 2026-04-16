@@ -28,6 +28,7 @@ jobs:
                   context: wan-runpod-worker
                   file: wan-runpod-worker/Dockerfile
                   push: true
-                  no-cache: true
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
                   tags: |
                       alexandruvucolov/pocket-twin-create:latest
