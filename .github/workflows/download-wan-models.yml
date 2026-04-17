@@ -1,112 +1,112 @@
 name: Download WAN + FLUX Models to RunPod Volume
 
 on:
-  workflow_dispatch:
+    workflow_dispatch:
 
 jobs:
-  download-models:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+    download-models:
+        runs-on: ubuntu-latest
+        timeout-minutes: 180
 
-    steps:
-      - name: Create RunPod pod to download models
-        id: create-pod
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: |
-          POD_ID=""
+        steps:
+            - name: Create RunPod pod to download models
+              id: create-pod
+              env:
+                  RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+              run: |
+                  POD_ID=""
 
-          # Try community cloud first, then secure — RunPod places pod in same
-          # datacenter as the volume automatically (no dataCenterId needed)
-          for GPU_AND_CLOUD in \
-            "NVIDIA GeForce RTX 4090|COMMUNITY" \
-            "NVIDIA RTX A6000|COMMUNITY" \
-            "NVIDIA RTX A5000|COMMUNITY" \
-            "NVIDIA RTX A4500|COMMUNITY" \
-            "NVIDIA A40|COMMUNITY" \
-            "NVIDIA GeForce RTX 3090|COMMUNITY" \
-            "NVIDIA RTX A5000 Ada Generation|COMMUNITY" \
-            "NVIDIA L40S|COMMUNITY" \
-            "NVIDIA RTX A6000|SECURE" \
-            "NVIDIA L40|SECURE" \
-            "NVIDIA L40S|SECURE" \
-            "NVIDIA GeForce RTX 4090|SECURE" \
-            "NVIDIA A100 80GB PCIe|SECURE" \
-            "NVIDIA RTX A5000|SECURE"; do
+                  # EU-RO-1 is a SECURE datacenter — try SECURE first, then COMMUNITY
+                  # Volume kesmy103kv is in EU-RO-1; RunPod auto-selects that datacenter
+                  for GPU_AND_CLOUD in \
+                    "NVIDIA GeForce RTX 4090|SECURE" \
+                    "NVIDIA RTX A6000|SECURE" \
+                    "NVIDIA L40S|SECURE" \
+                    "NVIDIA L40|SECURE" \
+                    "NVIDIA A100 80GB PCIe|SECURE" \
+                    "NVIDIA RTX A5000|SECURE" \
+                    "NVIDIA GeForce RTX 4090|COMMUNITY" \
+                    "NVIDIA RTX A6000|COMMUNITY" \
+                    "NVIDIA RTX A5000|COMMUNITY" \
+                    "NVIDIA RTX A4500|COMMUNITY" \
+                    "NVIDIA A40|COMMUNITY" \
+                    "NVIDIA GeForce RTX 3090|COMMUNITY" \
+                    "NVIDIA RTX A5000 Ada Generation|COMMUNITY" \
+                    "NVIDIA L40S|COMMUNITY"; do
 
-            GPU="${GPU_AND_CLOUD%%|*}"
-            CLOUD="${GPU_AND_CLOUD##*|}"
+                    GPU="${GPU_AND_CLOUD%%|*}"
+                    CLOUD="${GPU_AND_CLOUD##*|}"
 
-            MUTATION="mutation { podFindAndDeployOnDemand(input: { name: \"wan-model-download\", imageName: \"alexandruvucolov/pocket-twin-create:latest\", gpuTypeId: \"${GPU}\", cloudType: ${CLOUD}, gpuCount: 1, volumeInGb: 0, containerDiskInGb: 10, networkVolumeId: \"dfa3u01ehj\", dockerArgs: \"bash /app/download_checkpoints.sh\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"VOLUME_PATH\", value: \"/runpod-volume\"}] }) { id name } }"
-            JSON=$(jq -n --arg q "$MUTATION" '{query: $q}')
-            RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-              -H 'Content-Type: application/json' \
-              -d "$JSON") || RESULT=""
+                    MUTATION="mutation { podFindAndDeployOnDemand(input: { name: \"wan-model-download\", imageName: \"alexandruvucolov/pocket-twin-create:latest\", gpuTypeId: \"${GPU}\", cloudType: ${CLOUD}, gpuCount: 1, volumeInGb: 0, containerDiskInGb: 10, networkVolumeId: \"kesmy103kv\", dockerArgs: \"bash /app/download_checkpoints.sh\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"VOLUME_PATH\", value: \"/runpod-volume\"}] }) { id name } }"
+                    JSON=$(jq -n --arg q "$MUTATION" '{query: $q}')
+                    RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                      -H 'Content-Type: application/json' \
+                      -d "$JSON") || RESULT=""
 
-            ID=$(echo "$RESULT" | jq -r '.data.podFindAndDeployOnDemand.id // empty' 2>/dev/null || true)
+                    ID=$(echo "$RESULT" | jq -r '.data.podFindAndDeployOnDemand.id // empty' 2>/dev/null || true)
 
-            if [ -n "$ID" ]; then
-              echo "Launched pod $ID on $GPU ($CLOUD)"
-              POD_ID="$ID"
-              break
-            else
-              ERR=$(echo "$RESULT" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null | head -c 100 || echo "unknown error")
-              echo "SKIP $GPU ($CLOUD): $ERR"
-            fi
-          done
+                    if [ -n "$ID" ]; then
+                      echo "Launched pod $ID on $GPU ($CLOUD)"
+                      POD_ID="$ID"
+                      break
+                    else
+                      ERR=$(echo "$RESULT" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null | head -c 100 || echo "unknown error")
+                      echo "SKIP $GPU ($CLOUD): $ERR"
+                    fi
+                  done
 
-          if [ -z "$POD_ID" ]; then
-            echo "::error::No GPU available in US-KS-2. Try again later."
-            exit 1
-          fi
+                  if [ -z "$POD_ID" ]; then
+                    echo "::error::No GPU available in EU-RO-1. Try again later."
+                    exit 1
+                  fi
 
-          echo "pod_id=$POD_ID" >> "$GITHUB_OUTPUT"
+                  echo "pod_id=$POD_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for download to complete
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-          POD_ID: ${{ steps.create-pod.outputs.pod_id }}
-        run: |
-          echo "Waiting for pod $POD_ID to complete (~90 min expected)..."
-          STATUS="UNKNOWN"
+            - name: Wait for download to complete
+              env:
+                  RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+                  POD_ID: ${{ steps.create-pod.outputs.pod_id }}
+              run: |
+                  echo "Waiting for pod $POD_ID to complete (~90 min expected)..."
+                  STATUS="UNKNOWN"
 
-          for i in $(seq 1 300); do
-            QUERY="{ pod(input: { podId: \"${POD_ID}\" }) { desiredStatus runtime { uptimeInSeconds } } }"
-            JSON=$(jq -n --arg q "$QUERY" '{query: $q}')
-            RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-              -H 'Content-Type: application/json' \
-              -d "$JSON") || RESULT=""
+                  for i in $(seq 1 300); do
+                    QUERY="{ pod(input: { podId: \"${POD_ID}\" }) { desiredStatus runtime { uptimeInSeconds } } }"
+                    JSON=$(jq -n --arg q "$QUERY" '{query: $q}')
+                    RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                      -H 'Content-Type: application/json' \
+                      -d "$JSON") || RESULT=""
 
-            STATUS=$(echo "$RESULT" | jq -r '.data.pod.desiredStatus // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
-            UPTIME=$(echo "$RESULT" | jq -r '.data.pod.runtime.uptimeInSeconds // "N/A"' 2>/dev/null || echo "N/A")
-            echo "[$i/300] status=$STATUS uptime=${UPTIME}s"
+                    STATUS=$(echo "$RESULT" | jq -r '.data.pod.desiredStatus // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
+                    UPTIME=$(echo "$RESULT" | jq -r '.data.pod.runtime.uptimeInSeconds // "N/A"' 2>/dev/null || echo "N/A")
+                    echo "[$i/300] status=$STATUS uptime=${UPTIME}s"
 
-            if [ "$STATUS" = "EXITED" ]; then
-              echo "Download completed!"
-              break
-            elif [ "$STATUS" = "DEAD" ] || [ "$STATUS" = "FAILED" ]; then
-              echo "::error::Pod entered status $STATUS"
-              exit 1
-            fi
+                    if [ "$STATUS" = "EXITED" ]; then
+                      echo "Download completed!"
+                      break
+                    elif [ "$STATUS" = "DEAD" ] || [ "$STATUS" = "FAILED" ]; then
+                      echo "::error::Pod entered status $STATUS"
+                      exit 1
+                    fi
 
-            sleep 30
-          done
+                    sleep 30
+                  done
 
-          if [ "$STATUS" != "EXITED" ]; then
-            echo "::error::Timed out waiting for download (status=$STATUS)"
-            exit 1
-          fi
+                  if [ "$STATUS" != "EXITED" ]; then
+                    echo "::error::Timed out waiting for download (status=$STATUS)"
+                    exit 1
+                  fi
 
-      - name: Terminate pod
-        if: always()
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-          POD_ID: ${{ steps.create-pod.outputs.pod_id }}
-        run: |
-          if [ -n "$POD_ID" ]; then
-            JSON=$(jq -n --arg q "mutation { podTerminate(input: { podId: \"${POD_ID}\" }) }" '{query: $q}')
-            curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-              -H 'Content-Type: application/json' \
-              -d "$JSON" || true
-            echo "Pod $POD_ID terminated."
-          fi
+            - name: Terminate pod
+              if: always()
+              env:
+                  RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+                  POD_ID: ${{ steps.create-pod.outputs.pod_id }}
+              run: |
+                  if [ -n "$POD_ID" ]; then
+                    JSON=$(jq -n --arg q "mutation { podTerminate(input: { podId: \"${POD_ID}\" }) }" '{query: $q}')
+                    curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                      -H 'Content-Type: application/json' \
+                      -d "$JSON" || true
+                    echo "Pod $POD_ID terminated."
+                  fi
