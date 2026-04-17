@@ -4,148 +4,99 @@ on:
   workflow_dispatch:
 
 jobs:
-    download-models:
-        runs-on: ubuntu-latest
-        timeout-minutes: 120
+  download-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
 
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v4
+    steps:
+      - name: Create RunPod pod to download models
+        id: create-pod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          POD_ID=""
 
-            - name: Generate temporary SSH key pair
-              run: ssh-keygen -t ed25519 -C "github-action-wan-dl" -f /tmp/runpod_key -N ""
+          # Community cloud GPUs in US-KS-2 (same datacenter as volume dfa3u01ehj)
+          for GPU in \
+            "NVIDIA GeForce RTX 4090" \
+            "NVIDIA RTX A6000" \
+            "NVIDIA RTX A5000" \
+            "NVIDIA RTX A4500" \
+            "NVIDIA A40" \
+            "NVIDIA GeForce RTX 3090" \
+            "NVIDIA RTX A5000 Ada Generation" \
+            "NVIDIA L40S"; do
 
-            - name: Create RunPod pod with volume attached
-              id: create-pod
-              env:
-                  RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-              run: |
-                  PUBLIC_KEY=$(cat /tmp/runpod_key.pub | tr -d '\n')
+            MUTATION="mutation { podFindAndDeployOnDemand(input: { name: \"wan-model-download\", imageName: \"alexandruvucolov/pocket-twin-create:latest\", gpuTypeId: \"${GPU}\", cloudType: COMMUNITY, dataCenterId: \"US-KS-2\", gpuCount: 1, volumeInGb: 0, containerDiskInGb: 10, networkVolumeId: \"dfa3u01ehj\", dockerArgs: \"bash /app/download_checkpoints.sh\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"VOLUME_PATH\", value: \"/runpod-volume\"}] }) { id name } }"
+            JSON=$(jq -n --arg q "$MUTATION" '{query: $q}')
+            RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H 'Content-Type: application/json' \
+              -d "$JSON") || RESULT=""
 
-                  # Try GPU types in order until one is available
-                  POD_ID=""
-                  for GPU in \
-                    "NVIDIA A100 80GB PCIe" \
-                    "NVIDIA A100-SXM4-80GB" \
-                    "NVIDIA RTX A6000" \
-                    "NVIDIA L40" \
-                    "NVIDIA L40S" \
-                    "NVIDIA GeForce RTX 4090" \
-                    "NVIDIA RTX A5000" \
-                    "NVIDIA GeForce RTX 3090"; do
+            ID=$(echo "$RESULT" | jq -r '.data.podFindAndDeployOnDemand.id // empty' 2>/dev/null || true)
 
-                    MUTATION="mutation { podFindAndDeployOnDemand(input: {name: \"wan-model-download\", imageName: \"runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04\", gpuTypeId: \"${GPU}\", cloudType: SECURE, gpuCount: 1, volumeInGb: 0, containerDiskInGb: 50, networkVolumeId: \"dfa3u01ehj\", ports: \"22/tcp\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"PUBLIC_KEY\", value: \"${PUBLIC_KEY}\"}]}) { id name } }"
-                    JSON=$(jq -n --arg q "$MUTATION" '{query: $q}')
-                    RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-                      -H 'Content-Type: application/json' \
-                      -d "$JSON") || RESULT=""
+            if [ -n "$ID" ]; then
+              echo "Launched pod $ID on $GPU"
+              POD_ID="$ID"
+              break
+            else
+              ERR=$(echo "$RESULT" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null | head -c 100 || echo "unknown error")
+              echo "SKIP $GPU: $ERR"
+            fi
+          done
 
-                    ID=$(echo "$RESULT" | jq -r '.data.podFindAndDeployOnDemand.id // empty' 2>/dev/null || true)
+          if [ -z "$POD_ID" ]; then
+            echo "::error::No GPU available in US-KS-2. Try again later."
+            exit 1
+          fi
 
-                    if [ -n "$ID" ]; then
-                      echo "Launched pod $ID on $GPU"
-                      POD_ID="$ID"
-                      break
-                    else
-                      ERR=$(echo "$RESULT" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null | head -c 80 || echo "unknown error")
-                      echo "SKIP $GPU: $ERR"
-                    fi
-                  done
+          echo "pod_id=$POD_ID" >> "$GITHUB_OUTPUT"
 
-                  if [ -z "$POD_ID" ]; then
-                    echo "::error::No GPU available. Try again later."
-                    exit 1
-                  fi
+      - name: Wait for download to complete
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          POD_ID: ${{ steps.create-pod.outputs.pod_id }}
+        run: |
+          echo "Waiting for pod $POD_ID to complete (~90 min expected)..."
+          STATUS="UNKNOWN"
 
-                  echo "pod_id=$POD_ID" >> "$GITHUB_OUTPUT"
+          for i in $(seq 1 300); do
+            QUERY="{ pod(input: { podId: \"${POD_ID}\" }) { desiredStatus runtime { uptimeInSeconds } } }"
+            JSON=$(jq -n --arg q "$QUERY" '{query: $q}')
+            RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H 'Content-Type: application/json' \
+              -d "$JSON") || RESULT=""
 
-            - name: Wait for pod SSH to become reachable
-              id: wait-ssh
-              env:
-                  RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-                  POD_ID: ${{ steps.create-pod.outputs.pod_id }}
-              run: |
-                  echo "Waiting for pod $POD_ID to start..."
-                  SSH_HOST=""
-                  SSH_PORT=""
+            STATUS=$(echo "$RESULT" | jq -r '.data.pod.desiredStatus // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
+            UPTIME=$(echo "$RESULT" | jq -r '.data.pod.runtime.uptimeInSeconds // "N/A"' 2>/dev/null || echo "N/A")
+            echo "[$i/300] status=$STATUS uptime=${UPTIME}s"
 
-                  for i in $(seq 1 60); do
-                    QUERY="{ pod(input: { podId: \"${POD_ID}\" }) { runtime { ports { ip privatePort publicPort } } } }"
-                    JSON=$(jq -n --arg q "$QUERY" '{query: $q}')
-                    RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-                      -H 'Content-Type: application/json' \
-                      -d "$JSON") || RESULT=""
+            if [ "$STATUS" = "EXITED" ]; then
+              echo "Download completed!"
+              break
+            elif [ "$STATUS" = "DEAD" ] || [ "$STATUS" = "FAILED" ]; then
+              echo "::error::Pod entered status $STATUS"
+              exit 1
+            fi
 
-                    SSH_HOST=$(echo "$RESULT" | jq -r '.data.pod.runtime.ports[] | select(.privatePort==22) | .ip' 2>/dev/null || true)
-                    SSH_PORT=$(echo "$RESULT" | jq -r '.data.pod.runtime.ports[] | select(.privatePort==22) | .publicPort' 2>/dev/null || true)
+            sleep 30
+          done
 
-                    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
-                      echo "Pod SSH ready at $SSH_HOST:$SSH_PORT"
-                      echo "ssh_host=$SSH_HOST" >> "$GITHUB_OUTPUT"
-                      echo "ssh_port=$SSH_PORT" >> "$GITHUB_OUTPUT"
-                      break
-                    fi
+          if [ "$STATUS" != "EXITED" ]; then
+            echo "::error::Timed out waiting for download (status=$STATUS)"
+            exit 1
+          fi
 
-                    echo "[$i/60] not ready yet, retrying in 10s..."
-                    sleep 10
-                  done
-
-                  if [ -z "$SSH_HOST" ]; then
-                    echo "::error::Pod never became reachable via SSH"
-                    exit 1
-                  fi
-
-            - name: Wait for SSH daemon to accept connections
-              env:
-                  SSH_HOST: ${{ steps.wait-ssh.outputs.ssh_host }}
-                  SSH_PORT: ${{ steps.wait-ssh.outputs.ssh_port }}
-              run: |
-                  chmod 600 /tmp/runpod_key
-                  echo "Waiting for SSH to accept connections at $SSH_HOST:$SSH_PORT..."
-                  for i in $(seq 1 30); do
-                    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-                          -i /tmp/runpod_key -p "$SSH_PORT" root@"$SSH_HOST" \
-                          "echo ssh-ok" 2>/dev/null | grep -q "ssh-ok"; then
-                      echo "SSH connected!"
-                      break
-                    fi
-                    echo "[$i/30] SSH not ready, retrying in 5s..."
-                    sleep 5
-                  done
-
-            - name: Copy download script to pod
-              env:
-                  SSH_HOST: ${{ steps.wait-ssh.outputs.ssh_host }}
-                  SSH_PORT: ${{ steps.wait-ssh.outputs.ssh_port }}
-              run: |
-                  scp -o StrictHostKeyChecking=no \
-                      -i /tmp/runpod_key \
-                      -P "$SSH_PORT" \
-                      wan-runpod-worker/download_checkpoints.sh \
-                      root@"$SSH_HOST":/tmp/download_checkpoints.sh
-
-            - name: Download models onto volume
-              env:
-                  SSH_HOST: ${{ steps.wait-ssh.outputs.ssh_host }}
-                  SSH_PORT: ${{ steps.wait-ssh.outputs.ssh_port }}
-              run: |
-                  ssh -o StrictHostKeyChecking=no \
-                      -o ServerAliveInterval=60 \
-                      -o ServerAliveCountMax=60 \
-                      -i /tmp/runpod_key \
-                      -p "$SSH_PORT" root@"$SSH_HOST" \
-                      "pip install -q huggingface_hub && bash /tmp/download_checkpoints.sh"
-
-            - name: Terminate pod
-              if: always()
-              env:
-                  RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-                  POD_ID: ${{ steps.create-pod.outputs.pod_id }}
-              run: |
-                  if [ -n "$POD_ID" ]; then
-                    JSON=$(jq -n --arg q "mutation { podTerminate(input: { podId: \"${POD_ID}\" }) }" '{query: $q}')
-                    curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-                      -H 'Content-Type: application/json' \
-                      -d "$JSON"
-                    echo "Pod $POD_ID terminated."
-                  fi
+      - name: Terminate pod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          POD_ID: ${{ steps.create-pod.outputs.pod_id }}
+        run: |
+          if [ -n "$POD_ID" ]; then
+            JSON=$(jq -n --arg q "mutation { podTerminate(input: { podId: \"${POD_ID}\" }) }" '{query: $q}')
+            curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H 'Content-Type: application/json' \
+              -d "$JSON" || true
+            echo "Pod $POD_ID terminated."
+          fi
