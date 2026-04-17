@@ -16,18 +16,28 @@ jobs:
         run: |
           POD_ID=""
 
-          # Community cloud GPUs in US-KS-2 (same datacenter as volume dfa3u01ehj)
-          for GPU in \
-            "NVIDIA GeForce RTX 4090" \
-            "NVIDIA RTX A6000" \
-            "NVIDIA RTX A5000" \
-            "NVIDIA RTX A4500" \
-            "NVIDIA A40" \
-            "NVIDIA GeForce RTX 3090" \
-            "NVIDIA RTX A5000 Ada Generation" \
-            "NVIDIA L40S"; do
+          # Try community cloud first, then secure — RunPod places pod in same
+          # datacenter as the volume automatically (no dataCenterId needed)
+          for GPU_AND_CLOUD in \
+            "NVIDIA GeForce RTX 4090|COMMUNITY" \
+            "NVIDIA RTX A6000|COMMUNITY" \
+            "NVIDIA RTX A5000|COMMUNITY" \
+            "NVIDIA RTX A4500|COMMUNITY" \
+            "NVIDIA A40|COMMUNITY" \
+            "NVIDIA GeForce RTX 3090|COMMUNITY" \
+            "NVIDIA RTX A5000 Ada Generation|COMMUNITY" \
+            "NVIDIA L40S|COMMUNITY" \
+            "NVIDIA RTX A6000|SECURE" \
+            "NVIDIA L40|SECURE" \
+            "NVIDIA L40S|SECURE" \
+            "NVIDIA GeForce RTX 4090|SECURE" \
+            "NVIDIA A100 80GB PCIe|SECURE" \
+            "NVIDIA RTX A5000|SECURE"; do
 
-            MUTATION="mutation { podFindAndDeployOnDemand(input: { name: \"wan-model-download\", imageName: \"alexandruvucolov/pocket-twin-create:latest\", gpuTypeId: \"${GPU}\", cloudType: COMMUNITY, dataCenterId: \"US-KS-2\", gpuCount: 1, volumeInGb: 0, containerDiskInGb: 10, networkVolumeId: \"dfa3u01ehj\", dockerArgs: \"bash /app/download_checkpoints.sh\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"VOLUME_PATH\", value: \"/runpod-volume\"}] }) { id name } }"
+            GPU="${GPU_AND_CLOUD%%|*}"
+            CLOUD="${GPU_AND_CLOUD##*|}"
+
+            MUTATION="mutation { podFindAndDeployOnDemand(input: { name: \"wan-model-download\", imageName: \"alexandruvucolov/pocket-twin-create:latest\", gpuTypeId: \"${GPU}\", cloudType: ${CLOUD}, gpuCount: 1, volumeInGb: 0, containerDiskInGb: 10, networkVolumeId: \"dfa3u01ehj\", dockerArgs: \"bash /app/download_checkpoints.sh\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"VOLUME_PATH\", value: \"/runpod-volume\"}] }) { id name } }"
             JSON=$(jq -n --arg q "$MUTATION" '{query: $q}')
             RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
               -H 'Content-Type: application/json' \
@@ -36,12 +46,12 @@ jobs:
             ID=$(echo "$RESULT" | jq -r '.data.podFindAndDeployOnDemand.id // empty' 2>/dev/null || true)
 
             if [ -n "$ID" ]; then
-              echo "Launched pod $ID on $GPU"
+              echo "Launched pod $ID on $GPU ($CLOUD)"
               POD_ID="$ID"
               break
             else
               ERR=$(echo "$RESULT" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null | head -c 100 || echo "unknown error")
-              echo "SKIP $GPU: $ERR"
+              echo "SKIP $GPU ($CLOUD): $ERR"
             fi
           done
 
