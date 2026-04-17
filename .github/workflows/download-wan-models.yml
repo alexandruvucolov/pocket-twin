@@ -34,7 +34,7 @@ jobs:
                     "NVIDIA RTX A5000" \
                     "NVIDIA GeForce RTX 3090"; do
 
-                    MUTATION="mutation { podFindAndDeployOnDemand(input: {name: \"wan-model-download\", imageName: \"runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04\", gpuTypeId: \"${GPU}\", cloudType: SECURE, gpuCount: 1, volumeInGb: 0, containerDiskInGb: 50, networkVolumeId: \"dfa3u01ehj\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"PUBLIC_KEY\", value: \"${PUBLIC_KEY}\"}]}) { id name } }"
+                    MUTATION="mutation { podFindAndDeployOnDemand(input: {name: \"wan-model-download\", imageName: \"runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04\", gpuTypeId: \"${GPU}\", cloudType: SECURE, gpuCount: 1, volumeInGb: 0, containerDiskInGb: 50, networkVolumeId: \"dfa3u01ehj\", ports: \"22/tcp\", env: [{key: \"HF_HOME\", value: \"/runpod-volume/hf_cache\"}, {key: \"PUBLIC_KEY\", value: \"${PUBLIC_KEY}\"}]}) { id name } }"
                     JSON=$(jq -n --arg q "$MUTATION" '{query: $q}')
                     RESULT=$(curl -sf "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
                       -H 'Content-Type: application/json' \
