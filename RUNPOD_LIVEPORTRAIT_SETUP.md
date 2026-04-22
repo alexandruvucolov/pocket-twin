@@ -6,7 +6,7 @@ This app can generate a selfie preview clip with Runpod Serverless + LivePortrai
 
 If your goal is only a live streaming avatar experience, the required path is:
 
-- Runpod Pod or equivalent always-on GPU service
+- Runpod Po;d or equivalent always-on GPU service
 - your own HTTPS signaling backend
 - WebRTC
 - a realtime-capable LivePortrait serving layer

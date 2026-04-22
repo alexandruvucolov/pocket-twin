@@ -328,8 +328,10 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     const avatar = avatars.find((a) => a.id === avatarId);
     const avatarName = avatar?.name ?? "your avatar";
 
-    // Build history including the new user message
-    const history = [...(messages[avatarId] ?? []), userMsg];
+    // Build history including the new user message — cap at last 10 messages
+    // (5 turns) to avoid sending a growing wall of context to OpenAI on every
+    // turn, which increases latency and cost.
+    const history = [...(messages[avatarId] ?? []), userMsg].slice(-10);
 
     try {
       const reply = await getChatReply(avatarName, history);

@@ -1,0 +1,4 @@
+# Modal worker dependencies (for local dev / linting only)
+# Modal itself manages the container image — these are NOT installed into the image
+# via this file. See the image definition in app.py.
+modal>=0.73.0

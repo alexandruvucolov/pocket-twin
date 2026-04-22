@@ -27,7 +27,10 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -41,6 +44,14 @@
       "expo-camera",
       "expo-image-picker",
       "expo-audio",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Pocket Twin to save images and videos to your gallery.",
+          "savePhotosPermission": "Allow Pocket Twin to save images and videos to your gallery.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
       "@config-plugins/react-native-webrtc"
     ],
     "experiments": {

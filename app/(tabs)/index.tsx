@@ -7,6 +7,7 @@ import {
   FlatList,
   Image,
   Dimensions,
+  Alert,
 } from "react-native";
 import {
   SafeAreaView,
@@ -25,34 +26,37 @@ const CARD_WIDTH = (width - 24 * 2 - 12) / 2;
 function AvatarCard({
   avatar,
   onPress,
+  onDelete,
 }: {
   avatar: Avatar;
   onPress: () => void;
+  onDelete: () => void;
 }) {
   return (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={onPress}
-      activeOpacity={0.85}
-    >
-      <Image source={{ uri: avatar.imageUri }} style={styles.cardImage} />
-      <View style={styles.cardOverlay}>
-        <Text style={styles.cardName} numberOfLines={1}>
-          {avatar.name}
-        </Text>
-        <Text style={styles.cardMeta}>
-          {avatar.messageCount > 0 ? `${avatar.messageCount} msgs` : "New"}
-        </Text>
-      </View>
-      {avatar.lastChatAt && <View style={styles.activeDot} />}
-    </TouchableOpacity>
+    <View style={styles.cardWrapper}>
+      <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={1}>
+        <Image source={{ uri: avatar.imageUri }} style={styles.cardImage} />
+        <View style={styles.cardOverlay}>
+          <Text style={styles.cardName} numberOfLines={1}>
+            {avatar.name}
+          </Text>
+          <Text style={styles.cardMeta}>
+            {avatar.messageCount > 0 ? `${avatar.messageCount} msgs` : "New"}
+          </Text>
+        </View>
+        {avatar.lastChatAt && <View style={styles.activeDot} />}
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.deleteBtn} onPress={onDelete} hitSlop={8}>
+        <Text style={styles.deleteBtnText}>✕</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
 export default function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { avatars, coins } = useAvatars();
+  const { avatars, coins, removeAvatar } = useAvatars();
   const insets = useSafeAreaInsets();
 
   return (
@@ -77,7 +81,17 @@ export default function HomeScreen() {
       {/* Create New Avatar CTA */}
       <TouchableOpacity
         style={styles.createButton}
-        onPress={() => router.push("/upload")}
+        onPress={() => {
+          if (avatars.length >= 5) {
+            Alert.alert(
+              "Avatar Limit Reached",
+              "You can have up to 5 avatars. Please delete one before creating a new one.",
+              [{ text: "OK" }],
+            );
+            return;
+          }
+          router.push("/upload");
+        }}
         activeOpacity={0.88}
       >
         <View style={styles.createInner}>
@@ -121,6 +135,20 @@ export default function HomeScreen() {
             <AvatarCard
               avatar={item}
               onPress={() => router.push(`/chat/${item.id}`)}
+              onDelete={() =>
+                Alert.alert(
+                  "Delete Avatar",
+                  `Are you sure you want to delete "${item.name}"?`,
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Delete",
+                      style: "destructive",
+                      onPress: () => removeAvatar(item.id),
+                    },
+                  ],
+                )
+              }
             />
           )}
         />
@@ -224,10 +252,15 @@ const styles = StyleSheet.create({
   },
   grid: {
     paddingHorizontal: 24,
+    paddingTop: 14,
   },
   row: {
     gap: 12,
     marginBottom: 12,
+  },
+  cardWrapper: {
+    width: CARD_WIDTH,
+    position: "relative",
   },
   card: {
     width: CARD_WIDTH,
@@ -235,6 +268,29 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     overflow: "hidden",
     backgroundColor: Colors.surface,
+  },
+  deleteBtn: {
+    position: "absolute",
+    top: -10,
+    right: -10,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#E53935",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.35,
+    shadowRadius: 2,
+    elevation: 5,
+  },
+  deleteBtnText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 13,
   },
   cardImage: {
     width: "100%",

@@ -86,14 +86,20 @@ export default function ChatScreen() {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
-  // 'preparing' = TTS/image fetch, 'queued' = waiting for worker, 'running' = inference
-  const [generationPhase, setGenerationPhase] = useState<'preparing' | 'queued' | 'running'>('preparing');
+  // 'preparing' = TTS/image fetch, 'queued' = waiting for worker, 'running' = inference, 'downloading' = fetching video
+  const [generationPhase, setGenerationPhase] = useState<
+    "preparing" | "queued" | "running" | "downloading"
+  >("preparing");
   const [queueElapsedSec, setQueueElapsedSec] = useState(0);
-  const generationPhaseRef = useRef<'preparing' | 'queued' | 'running'>('preparing');
+  const generationPhaseRef = useRef<
+    "preparing" | "queued" | "running" | "downloading"
+  >("preparing");
   const queueTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const videoPlayer = useVideoPlayer(null);
   const [isResponseVideo, setIsResponseVideo] = useState(false);
   const responseVideoResolverRef = useRef<(() => void) | null>(null);
+  // Fades the video panel out→in when swapping response→idle to hide the zoom snap
+  const videoFadeAnim = useRef(new Animated.Value(1)).current;
   const responseVideoSafetyTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -838,6 +844,7 @@ export default function ChatScreen() {
     (videoUrl: string): Promise<void> => {
       return new Promise<void>((resolve) => {
         isPlayingResponseRef.current = true;
+        videoFadeAnim.setValue(1); // ensure fully visible before response starts
         setIsResponseVideo(true);
         setDisplayedVideoUrl(videoUrl);
 
@@ -849,10 +856,22 @@ export default function ChatScreen() {
           resolved = true;
           sub.remove();
           isPlayingResponseRef.current = false;
-          setIsResponseVideo(false);
-          const idleUrl = avatar?.videoUrl ?? null;
-          setDisplayedVideoUrl(idleUrl);
-          resolve();
+          // Fade out, swap to idle, fade back in — hides the aspect-ratio snap
+          Animated.timing(videoFadeAnim, {
+            toValue: 0,
+            duration: 120,
+            useNativeDriver: true,
+          }).start(() => {
+            setIsResponseVideo(false);
+            const idleUrl = avatar?.videoUrl ?? null;
+            setDisplayedVideoUrl(idleUrl);
+            Animated.timing(videoFadeAnim, {
+              toValue: 1,
+              duration: 250,
+              useNativeDriver: true,
+            }).start();
+            resolve();
+          });
         };
 
         responseVideoResolverRef.current = resolveOnce;
@@ -901,8 +920,8 @@ export default function ChatScreen() {
 
       setIsGenerating(true);
       setGenerationProgress(0);
-      setGenerationPhase('preparing');
-      generationPhaseRef.current = 'preparing';
+      setGenerationPhase("preparing");
+      generationPhaseRef.current = "preparing";
 
       const stopQueueTimer = () => {
         if (queueTimerRef.current) {
@@ -944,8 +963,8 @@ export default function ChatScreen() {
           sourceImageMimeType,
           audioBase64,
         });
-        setGenerationPhase('queued');
-        generationPhaseRef.current = 'queued';
+        setGenerationPhase("queued");
+        generationPhaseRef.current = "queued";
         setQueueElapsedSec(0);
         const queueStart = Date.now();
         queueTimerRef.current = setInterval(() => {
@@ -956,9 +975,9 @@ export default function ChatScreen() {
         const videoUrl = await pollLatentSyncJob(
           jobId,
           (pct) => {
-            if (pct >= 10 && generationPhaseRef.current !== 'running') {
-              setGenerationPhase('running');
-              generationPhaseRef.current = 'running';
+            if (pct >= 10 && generationPhaseRef.current !== "running") {
+              setGenerationPhase("running");
+              generationPhaseRef.current = "running";
               stopQueueTimer();
             }
             setGenerationProgress(20 + Math.round(pct * 0.75));
@@ -968,10 +987,33 @@ export default function ChatScreen() {
 
         stopQueueTimer();
         setGenerationProgress(100);
+
+        // 5. Download video to local cache so VideoView plays instantly (no buffering)
+        setGenerationPhase("downloading");
+        generationPhaseRef.current = "downloading";
+        let localVideoUri = videoUrl;
+        try {
+          const localPath =
+            (FileSystem.cacheDirectory ?? "") + `response_${Date.now()}.mp4`;
+          const { uri } = await FileSystem.downloadAsync(videoUrl, localPath);
+          localVideoUri = uri;
+        } catch (dlErr) {
+          console.warn(
+            "[LatentSync] video pre-download failed, using remote URL:",
+            dlErr,
+          );
+        }
         setIsGenerating(false);
 
-        // 5. Play response video; await for voice loop sync
-        await waitForResponseVideoPlayback(videoUrl);
+        // 6. Play response video; await for voice loop sync
+        await waitForResponseVideoPlayback(localVideoUri);
+
+        // Clean up cached file after playback
+        if (localVideoUri !== videoUrl) {
+          FileSystem.deleteAsync(localVideoUri, { idempotent: true }).catch(
+            () => {},
+          );
+        }
       } catch (err) {
         console.warn("[LatentSync] generation failed:", err);
         stopQueueTimer();
@@ -1005,9 +1047,7 @@ export default function ChatScreen() {
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
       {/* ── LAYER 1 (behind): Avatar panel ── absolute, always visible */}
-      <Animated.View
-        style={[styles.avatarPanel, { opacity: isGenerating ? 1 : pulseAnim }]}
-      >
+      <Animated.View style={[styles.avatarPanel]}>
         {isGenerating ? (
           /* ── Loading overlay: blurred avatar + phase-aware status ── */
           <>
@@ -1017,43 +1057,39 @@ export default function ChatScreen() {
               blurRadius={18}
             />
             <View style={styles.generatingOverlay}>
-              {generationPhase === 'queued' ? (
-                /* Spinner + elapsed timer while waiting for worker */
-                <>
-                  <ActivityIndicator color={Colors.white} size="large" />
-                  <Text style={styles.generatingPhaseLabel}>Waking worker…</Text>
-                  <Text style={styles.generatingElapsed}>{queueElapsedSec}s</Text>
-                  <Text style={styles.generatingHint}>First reply can take 3-5 min</Text>
-                </>
-              ) : generationPhase === 'running' ? (
-                /* Progress % during actual inference */
-                <>
-                  <Text style={styles.generatingPercent}>
-                    {generationProgress}%
-                  </Text>
-                  <Text style={styles.generatingLabel}>Generating response…</Text>
-                </>
-              ) : (
-                /* Preparing phase: TTS + image fetch */
-                <>
-                  <ActivityIndicator color={Colors.white} size="large" />
-                  <Text style={styles.generatingLabel}>Preparing…</Text>
-                </>
-              )}
+              {generationPhase === "queued" ? (
+                <Text style={styles.generatingWarmupLabel}>
+                  First reply takes ~3 min{"\n"}to wake the worker ☕
+                </Text>
+              ) : null}
+              <ActivityIndicator color={Colors.white} size={56} />
+              {generationPhase === "running" ? (
+                <Text style={styles.generatingPercent}>
+                  {generationProgress}%
+                </Text>
+              ) : null}
             </View>
           </>
-        ) : displayedVideoUrl ? (
-          <VideoView
-            player={videoPlayer}
-            style={styles.avatarPanelImage}
-            contentFit="cover"
-            nativeControls={false}
-          />
         ) : (
-          <Image
-            source={{ uri: avatar.imageUri }}
-            style={styles.avatarPanelImage}
-          />
+          <>
+            {/* Static avatar always rendered as background — prevents black flash during video swap */}
+            <Image
+              source={{ uri: avatar.imageUri }}
+              style={styles.avatarPanelImage}
+            />
+            {displayedVideoUrl ? (
+              <Animated.View
+                style={[StyleSheet.absoluteFill, { opacity: videoFadeAnim }]}
+              >
+                <VideoView
+                  player={videoPlayer}
+                  style={styles.avatarPanelImage}
+                  contentFit="cover"
+                  nativeControls={false}
+                />
+              </Animated.View>
+            ) : null}
+          </>
         )}
         {!isGenerating ? <View style={styles.avatarPanelOverlay} /> : null}
         {/* Header overlaid on avatar */}
@@ -1444,13 +1480,24 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
   },
+  generatingWarmupLabel: {
+    color: Colors.white,
+    fontSize: 15,
+    fontWeight: "600",
+    textAlign: "center",
+    lineHeight: 22,
+    marginBottom: 12,
+    textShadowColor: "rgba(0,0,0,0.6)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
   generatingPercent: {
     color: Colors.white,
-    fontSize: 64,
-    fontWeight: "900",
+    fontSize: 25,
+    fontWeight: "700",
     textShadowColor: "rgba(0,0,0,0.7)",
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   generatingLabel: {
     color: "rgba(255,255,255,0.85)",
@@ -1464,18 +1511,11 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: 18,
     fontWeight: "700",
-    marginTop: 12,
-    textShadowColor: "rgba(0,0,0,0.6)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
   },
   generatingElapsed: {
     color: Colors.white,
-    fontSize: 48,
-    fontWeight: "900",
-    textShadowColor: "rgba(0,0,0,0.7)",
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
+    fontSize: 18,
+    fontWeight: "700",
   },
   generatingHint: {
     color: "rgba(255,255,255,0.65)",
@@ -1487,7 +1527,7 @@ const styles = StyleSheet.create({
   },
   avatarPanelOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(13,13,26,0.40)",
+    backgroundColor: "rgba(13,13,26,0.0)",
   },
   header: {
     position: "absolute",

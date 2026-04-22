@@ -1,21 +1,20 @@
 /**
  * create-serverless.ts
  *
- * Client for the Pocket Twin WAN 2.1 + FLUX RunPod serverless endpoint.
+ * Client for the Pocket Twin WAN 2.1 + FLUX Modal serverless endpoint.
  * Handles: text_to_image | text_to_video | image_to_video
  *
- * Required env vars:
- *   EXPO_PUBLIC_RUNPOD_API_KEY
- *   EXPO_PUBLIC_RUNPOD_CREATE_ENDPOINT_ID   ← w8h6kiymam2pcf
+ * Required env var:
+ *   EXPO_PUBLIC_MODAL_CREATE_URL   ← the web_endpoint URL from `modal deploy`
+ *                                     e.g. https://pocket-twin-create--pocket-twin-create.modal.run
  */
 
-const RUNPOD_BASE_URL = "https://api.runpod.ai/v2";
-const POLL_INTERVAL_MS = 2000;
-const MAX_POLL_ATTEMPTS = 300; // 10 min max
+// Two separate Modal endpoints — cheap A10G for images, H100 for video
+const REQUEST_TIMEOUT_MS = 900_000; // 15 min (WAN 30s video can be slow)
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type CreateTask = "text_to_image" | "text_to_video" | "image_to_video";
+export type CreateTask = "text_to_image" | "image_to_image" | "text_to_video" | "image_to_video";
 
 export interface CreateJobStatus {
   phase: "queued" | "running" | "done" | "error";
@@ -33,6 +32,18 @@ export interface TextToImageInput {
   num_inference_steps?: number;
   seed?: number;
   style?: string;
+}
+
+export interface ImageToImageInput {
+  task: "image_to_image";
+  prompt: string;
+  image: string; // base64-encoded reference image
+  negative_prompt?: string;
+  width?: number;
+  height?: number;
+  num_inference_steps?: number;
+  strength?: number; // 0–1, how much to modify the image (default 0.75)
+  seed?: number;
 }
 
 export interface TextToVideoInput {
@@ -60,38 +71,34 @@ export interface ImageToVideoInput {
 
 export type CreateInput =
   | TextToImageInput
+  | ImageToImageInput
   | TextToVideoInput
   | ImageToVideoInput;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function apiKey(): string {
-  const v = (process.env.EXPO_PUBLIC_RUNPOD_API_KEY ?? "").trim();
-  if (!v) throw new Error("EXPO_PUBLIC_RUNPOD_API_KEY is not set.");
+function imageUrl(): string {
+  const v = (process.env.EXPO_PUBLIC_MODAL_IMAGE_URL ?? "").trim();
+  if (!v) throw new Error("EXPO_PUBLIC_MODAL_IMAGE_URL is not set.");
   return v;
 }
 
-function endpointId(): string {
-  const v = (process.env.EXPO_PUBLIC_RUNPOD_CREATE_ENDPOINT_ID ?? "").trim();
-  if (!v) throw new Error("EXPO_PUBLIC_RUNPOD_CREATE_ENDPOINT_ID is not set.");
+function videoUrl(): string {
+  const v = (process.env.EXPO_PUBLIC_MODAL_VIDEO_URL ?? "").trim();
+  if (!v) throw new Error("EXPO_PUBLIC_MODAL_VIDEO_URL is not set.");
   return v;
 }
 
-function baseUrl(): string {
-  return `${RUNPOD_BASE_URL}/${endpointId()}`;
-}
-
-function authHeaders() {
-  return {
-    Authorization: `Bearer ${apiKey()}`,
-    "Content-Type": "application/json",
-  };
+function endpointUrl(task: CreateTask): string {
+  return task === "text_to_image" || task === "image_to_image"
+    ? imageUrl()
+    : videoUrl();
 }
 
 export function isCreateConfigured(): boolean {
-  return Boolean(
-    (process.env.EXPO_PUBLIC_RUNPOD_API_KEY ?? "").trim() &&
-    (process.env.EXPO_PUBLIC_RUNPOD_CREATE_ENDPOINT_ID ?? "").trim(),
+  return (
+    Boolean((process.env.EXPO_PUBLIC_MODAL_IMAGE_URL ?? "").trim()) &&
+    Boolean((process.env.EXPO_PUBLIC_MODAL_VIDEO_URL ?? "").trim())
   );
 }
 
@@ -100,90 +107,101 @@ export function isCreateConfigured(): boolean {
 export async function warmupCreateWorker(): Promise<void> {
   if (!isCreateConfigured()) return;
   try {
-    await fetch(`${baseUrl()}/run`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({ input: { warmup: true } }),
-    });
+    // Warm both endpoints in parallel
+    await Promise.allSettled([
+      fetch(imageUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: "warmup" }),
+      }),
+      fetch(videoUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: "warmup" }),
+      }),
+    ]);
   } catch (_) {
     // best-effort
   }
 }
 
-// ─── Submit job ──────────────────────────────────────────────────────────────
-
-async function submitJob(input: CreateInput): Promise<string> {
-  const res = await fetch(`${baseUrl()}/run`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ input }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`RunPod submit failed ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  if (!data.id) throw new Error("No job ID returned from RunPod");
-  return data.id as string;
-}
-
-// ─── Poll status ─────────────────────────────────────────────────────────────
-
-async function pollStatus(jobId: string): Promise<{
-  status: string;
-  output?: { url?: string; error?: string };
-  error?: string;
-}> {
-  const res = await fetch(`${baseUrl()}/status/${jobId}`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(`RunPod poll failed ${res.status}`);
-  return await res.json();
-}
-
 // ─── Main: run job with progress callback ────────────────────────────────────
 
 /**
- * Submit a create job and poll until done.
- * Calls `onStatus` with progress updates so the UI can react.
+ * Submit a create job to Modal and wait for the result.
+ * Calls `onStatus` with simulated progress while the request is in-flight.
  */
 export async function runCreateJob(
   input: CreateInput,
   onStatus: (status: CreateJobStatus) => void,
   signal?: AbortSignal,
 ): Promise<string> {
-  onStatus({ phase: "queued", progress: 0 });
+  onStatus({ phase: "queued", progress: 5 });
 
-  const jobId = await submitJob(input);
+  // Simulate progress while Modal processes the request
+  let fakeProgress = 5;
+  const progressTimer = setInterval(() => {
+    fakeProgress = Math.min(fakeProgress + 2, 90);
+    onStatus({ phase: "running", progress: fakeProgress });
+  }, 3000);
 
-  let attempt = 0;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const combinedSignal = signal
+      ? combineSignals(signal, controller.signal)
+      : controller.signal;
 
-  while (attempt < MAX_POLL_ATTEMPTS) {
-    if (signal?.aborted) throw new Error("Cancelled");
+    onStatus({ phase: "running", progress: 10 });
 
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    attempt++;
+    const res = await fetch(endpointUrl(input.task), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      signal: combinedSignal,
+    });
 
-    const data = await pollStatus(jobId);
-    const s = data.status;
+    clearTimeout(timeoutId);
 
-    if (s === "IN_QUEUE") {
-      onStatus({ phase: "queued", progress: 5 });
-    } else if (s === "IN_PROGRESS") {
-      // Fake linear progress while running (real progress not exposed by RunPod)
-      const fakeProgress = Math.min(10 + attempt * 2, 90);
-      onStatus({ phase: "running", progress: fakeProgress });
-    } else if (s === "COMPLETED") {
-      const url = data.output?.url;
-      if (!url) throw new Error("Job completed but no output URL");
-      onStatus({ phase: "done", progress: 100, url });
-      return url;
-    } else if (s === "FAILED" || s === "CANCELLED") {
-      const err = data.output?.error ?? data.error ?? "Job failed on RunPod";
-      onStatus({ phase: "error", error: err });
-      throw new Error(err);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Modal endpoint error ${res.status}: ${text}`);
     }
-  }
 
-  throw new Error("Timed out waiting for create job");
+    const data = await res.json();
+
+    if (data.error) {
+      onStatus({ phase: "error", error: data.error });
+      throw new Error(data.error);
+    }
+
+    // Images are returned as base64 to avoid Firebase Storage costs
+    if (data.base64) {
+      const dataUri = `data:image/png;base64,${data.base64}`;
+      onStatus({ phase: "done", progress: 100, url: dataUri });
+      return dataUri;
+    }
+
+    const url: string = data.url;
+    if (!url) throw new Error("Modal returned no output URL");
+
+    onStatus({ phase: "done", progress: 100, url });
+    return url;
+  } finally {
+    clearInterval(progressTimer);
+  }
+}
+
+// ─── Utility ─────────────────────────────────────────────────────────────────
+
+function combineSignals(...signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+  for (const sig of signals) {
+    if (sig.aborted) {
+      controller.abort();
+      break;
+    }
+    sig.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  return controller.signal;
 }

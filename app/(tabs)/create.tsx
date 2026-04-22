@@ -1,4 +1,5 @@
 import React, { useState, useRef } from "react";
+import { useVideoPlayer, VideoView } from "expo-video";
 import {
   View,
   Text,
@@ -10,7 +11,13 @@ import {
   Dimensions,
   ActivityIndicator,
   Alert,
+  Modal,
+  StatusBar,
 } from "react-native";
+import * as ImagePicker from "expo-image-picker";
+import * as MediaLibrary from "expo-media-library";
+import * as Sharing from "expo-sharing";
+import { File, Paths } from "expo-file-system";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -26,6 +33,21 @@ import {
 
 const { width } = Dimensions.get("window");
 
+function VideoPlayerResult({ uri, style }: { uri: string; style: any }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = true;
+    p.play();
+  });
+  return (
+    <VideoView
+      player={player}
+      style={style}
+      contentFit="cover"
+      nativeControls
+    />
+  );
+}
+
 type Mode = "image" | "video";
 type VideoSource = "text" | "image";
 
@@ -38,8 +60,21 @@ export default function CreateScreen() {
     "6s" | "15s" | "30s"
   >("6s");
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
+  const [referenceImage, setReferenceImage] = useState<{
+    uri: string;
+    base64: string;
+  } | null>(null);
   const [jobStatus, setJobStatus] = useState<CreateJobStatus | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [savedItems, setSavedItems] = useState<
+    { uri: string; type: "image" | "video" }[]
+  >([]);
+  const [savedMessage, setSavedMessage] = useState(false);
+  const [lightboxItem, setLightboxItem] = useState<{
+    uri: string;
+    type: "image" | "video";
+  } | null>(null);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const generating =
@@ -47,8 +82,96 @@ export default function CreateScreen() {
     jobStatus.phase !== "done" &&
     jobStatus.phase !== "error";
 
+  const handlePickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission required",
+        "Allow access to your photo library to pick an image.",
+      );
+      return;
+    }
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      quality: 0.85,
+      base64: true,
+    });
+    if (!picked.canceled && picked.assets[0]) {
+      const asset = picked.assets[0];
+      setReferenceImage({ uri: asset.uri, base64: asset.base64 ?? "" });
+    }
+  };
+
+  const handleSave = async () => {
+    if (!result) return;
+    try {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Permission required",
+          "Allow access to your photo library to save.",
+        );
+        return;
+      }
+      let localUri: string;
+      if (result.startsWith("data:image/")) {
+        const b64 = result.replace(/^data:image\/\w+;base64,/, "");
+        const cacheFile = new File(
+          Paths.cache,
+          `pocket-twin-${Date.now()}.png`,
+        );
+        await cacheFile.write(b64, { encoding: "base64" });
+        localUri = cacheFile.uri;
+      } else {
+        const downloaded = await File.downloadFileAsync(result, Paths.cache);
+        localUri = downloaded.uri;
+      }
+      await MediaLibrary.saveToLibraryAsync(localUri);
+      // Add to saved gallery
+      const savedUri = result;
+      const savedMode = mode;
+      setSavedItems((prev) => [{ uri: savedUri, type: savedMode }, ...prev]);
+      // Show "Saved to gallery" banner in the result card, then dismiss after 2s
+      setSavedMessage(true);
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => {
+        setSavedMessage(false);
+        setResult(null);
+        setJobStatus(null);
+      }, 2000);
+    } catch (e: any) {
+      Alert.alert("Save failed", e.message);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!result) return;
+    try {
+      let localUri: string;
+      if (result.startsWith("data:image/")) {
+        const b64 = result.replace(/^data:image\/\w+;base64,/, "");
+        const cacheFile = new File(Paths.cache, `pocket-twin-share-${Date.now()}.png`);
+        await cacheFile.write(b64, { encoding: "base64" });
+        localUri = cacheFile.uri;
+      } else {
+        const downloaded = await File.downloadFileAsync(result, Paths.cache);
+        localUri = downloaded.uri;
+      }
+      await Sharing.shareAsync(localUri, {
+        mimeType: mode === "video" ? "video/mp4" : "image/png",
+        dialogTitle: "Share your creation",
+      });
+    } catch (e: any) {
+      if (!e.message?.includes("cancelled")) {
+        Alert.alert("Share failed", e.message);
+      }
+    }
+  };
+
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
+    if (generating) return; // guard against double-tap
     if (!isCreateConfigured()) {
       Alert.alert(
         "Not configured",
@@ -57,32 +180,46 @@ export default function CreateScreen() {
       return;
     }
 
+    // Cancel any in-flight request before starting a new one
+    abortRef.current?.abort();
     abortRef.current = new AbortController();
     setResult(null);
     setJobStatus({ phase: "queued", progress: 0 });
 
+    const promptWithStyle =
+      selectedStyle && mode === "image"
+        ? `${prompt.trim()}, ${selectedStyle} style`
+        : prompt.trim();
+
     try {
       const input =
         mode === "image"
-          ? {
-              task: "text_to_image" as const,
-              prompt,
-              style: selectedStyle ?? undefined,
-              num_inference_steps: 4,
-            }
+          ? referenceImage
+            ? {
+                task: "image_to_image" as const,
+                prompt: promptWithStyle,
+                image: referenceImage.base64,
+                num_inference_steps: 8,
+                strength: 0.75,
+              }
+            : {
+                task: "text_to_image" as const,
+                prompt: promptWithStyle,
+                num_inference_steps: 4,
+              }
           : videoSource === "text"
             ? {
                 task: "text_to_video" as const,
-                prompt,
+                prompt: promptWithStyle,
                 duration: selectedDuration,
-                num_inference_steps: 30,
+                num_inference_steps: 20,
               }
             : {
                 task: "image_to_video" as const,
-                prompt,
-                image: "", // TODO: wire real base64 from picker
+                prompt: promptWithStyle,
+                image: referenceImage?.base64 ?? "",
                 duration: selectedDuration,
-                num_inference_steps: 30,
+                num_inference_steps: 20,
               };
 
       const url = await runCreateJob(
@@ -210,9 +347,37 @@ export default function CreateScreen() {
             <Text style={styles.sectionLabel}>
               {mode === "image" ? "Reference image (optional)" : "Source image"}
             </Text>
-            <TouchableOpacity style={styles.imagePicker}>
-              <Ionicons name="add" size={32} color={Colors.textMuted} />
-              <Text style={styles.imagePickerText}>Tap to upload</Text>
+            <TouchableOpacity
+              style={styles.imagePicker}
+              onPress={handlePickImage}
+            >
+              {referenceImage ? (
+                <View style={StyleSheet.absoluteFill}>
+                  <Image
+                    source={{ uri: referenceImage.uri }}
+                    style={[StyleSheet.absoluteFill, { borderRadius: 14 }]}
+                    resizeMode="cover"
+                  />
+                  <TouchableOpacity
+                    style={styles.imagePickerClear}
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      setReferenceImage(null);
+                    }}
+                  >
+                    <Ionicons
+                      name="close-circle"
+                      size={26}
+                      color={Colors.white}
+                    />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <>
+                  <Ionicons name="add" size={32} color={Colors.textMuted} />
+                  <Text style={styles.imagePickerText}>Tap to upload</Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
         )}
@@ -324,10 +489,19 @@ export default function CreateScreen() {
         <TouchableOpacity
           style={[
             styles.generateBtn,
-            (!prompt.trim() || generating) && styles.generateBtnDisabled,
+            (!prompt.trim() ||
+              generating ||
+              (mode === "video" &&
+                videoSource === "image" &&
+                !referenceImage)) &&
+              styles.generateBtnDisabled,
           ]}
           onPress={handleGenerate}
-          disabled={!prompt.trim() || generating}
+          disabled={
+            !prompt.trim() ||
+            generating ||
+            (mode === "video" && videoSource === "image" && !referenceImage)
+          }
           activeOpacity={0.85}
         >
           {generating ? (
@@ -366,13 +540,29 @@ export default function CreateScreen() {
 
         {result && !generating && (
           <View style={styles.resultCard}>
-            <Image
-              source={{ uri: result }}
-              style={styles.resultImage}
-              resizeMode="cover"
-            />
+            {mode === "video" ? (
+              <VideoPlayerResult uri={result} style={styles.resultImage} />
+            ) : (
+              <Image
+                source={{ uri: result }}
+                style={styles.resultImage}
+                resizeMode="cover"
+              />
+            )}
+            {savedMessage && (
+              <View style={styles.savedBanner}>
+                <Ionicons name="checkmark-circle" size={20} color="#4ADE80" />
+                <Text style={styles.savedBannerText}>
+                  Picture saved to gallery
+                </Text>
+              </View>
+            )}
             <View style={styles.resultActions}>
-              <TouchableOpacity style={styles.resultBtn}>
+              <TouchableOpacity
+                style={styles.resultBtn}
+                onPress={handleSave}
+                disabled={savedMessage}
+              >
                 <Ionicons
                   name="download-outline"
                   size={18}
@@ -380,7 +570,7 @@ export default function CreateScreen() {
                 />
                 <Text style={styles.resultBtnText}>Save</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.resultBtn}>
+              <TouchableOpacity style={styles.resultBtn} onPress={handleShare}>
                 <Ionicons
                   name="share-social-outline"
                   size={18}
@@ -390,6 +580,7 @@ export default function CreateScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.resultBtn, styles.resultBtnPrimary]}
+                onPress={handleGenerate}
               >
                 <Ionicons
                   name="refresh-outline"
@@ -401,7 +592,76 @@ export default function CreateScreen() {
             </View>
           </View>
         )}
+
+        {/* Saved gallery */}
+        {savedItems.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Saved</Text>
+            <View style={styles.galleryGrid}>
+              {savedItems.map((item, index) => (
+                <TouchableOpacity
+                  key={index}
+                  style={styles.galleryItem}
+                  onPress={() => setLightboxItem(item)}
+                  activeOpacity={0.85}
+                >
+                  <Image
+                    source={{ uri: item.uri }}
+                    style={styles.galleryThumb}
+                    resizeMode="cover"
+                  />
+                  {item.type === "video" && (
+                    <View style={styles.galleryVideoIcon}>
+                      <Ionicons name="play" size={16} color={Colors.white} />
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    style={styles.galleryDeleteBtn}
+                    onPress={() =>
+                      setSavedItems((prev) =>
+                        prev.filter((_, i) => i !== index),
+                      )
+                    }
+                  >
+                    <Ionicons name="close-circle" size={22} color="#FF4444" />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
       </ScrollView>
+
+      {/* Full-screen lightbox */}
+      <Modal
+        visible={lightboxItem !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setLightboxItem(null)}
+      >
+        <View style={styles.lightboxBackdrop}>
+          <TouchableOpacity
+            style={styles.lightboxClose}
+            onPress={() => setLightboxItem(null)}
+          >
+            <Ionicons name="close" size={28} color={Colors.white} />
+          </TouchableOpacity>
+          {lightboxItem &&
+            (lightboxItem.type === "video" ? (
+              <VideoPlayerResult
+                uri={lightboxItem.uri}
+                style={styles.lightboxMedia}
+              />
+            ) : (
+              <Image
+                source={{ uri: lightboxItem.uri }}
+                style={styles.lightboxMedia}
+                resizeMode="contain"
+              />
+            ))}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -524,10 +784,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: Colors.surface,
     gap: 6,
+    overflow: "hidden",
   },
   imagePickerText: {
     color: Colors.textMuted,
     fontSize: 13,
+  },
+  imagePickerClear: {
+    position: "absolute",
+    top: 6,
+    right: 6,
   },
   promptInput: {
     backgroundColor: Colors.surface,
@@ -663,5 +929,78 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: 13,
     fontWeight: "600",
+  },
+  // Saved gallery
+  galleryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  galleryItem: {
+    width: (width - 48 - 8) / 2,
+    aspectRatio: 1,
+    borderRadius: 12,
+    overflow: "visible",
+  },
+  galleryThumb: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 12,
+  },
+  galleryVideoIcon: {
+    position: "absolute",
+    bottom: 8,
+    left: 8,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 12,
+    padding: 4,
+  },
+  galleryDeleteBtn: {
+    position: "absolute",
+    top: -8,
+    right: -8,
+    zIndex: 10,
+    backgroundColor: Colors.background,
+    borderRadius: 11,
+  },
+  // Saved banner
+  savedBanner: {
+    position: "absolute",
+    bottom: 70,
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  savedBannerText: {
+    color: "#4ADE80",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  // Lightbox
+  lightboxBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.95)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  lightboxClose: {
+    position: "absolute",
+    top: 52,
+    right: 20,
+    zIndex: 10,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderRadius: 20,
+    padding: 6,
+  },
+  lightboxMedia: {
+    width: width,
+    height: width,
   },
 });

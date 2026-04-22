@@ -37,6 +37,11 @@ import {
 
 const { width, height } = Dimensions.get("window");
 
+const VOICE_OPTIONS = [
+  { label: "♂  Male", id: "5BZv9Z02hAMUmkkcd5Hj" },
+  { label: "♀  Female", id: "3z9q8Y7plHbvhDZehEII" },
+] as const;
+
 type Step = "pick" | "camera" | "preview" | "animating" | "done";
 
 export default function UploadScreen() {
@@ -48,7 +53,7 @@ export default function UploadScreen() {
   const [step, setStep] = useState<Step>("pick");
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [avatarName, setAvatarName] = useState("");
-  const [voiceId, setVoiceId] = useState("");
+  const [voiceId, setVoiceId] = useState(VOICE_OPTIONS[1].id);
   const [progress, setProgress] = useState(0);
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<"front" | "back">("front");
@@ -407,18 +412,29 @@ export default function UploadScreen() {
             </View>
 
             <View style={styles.nameField}>
-              <Text style={styles.nameLabel}>
-                ElevenLabs Voice ID (optional)
-              </Text>
-              <TextInput
-                style={styles.nameInput}
-                placeholder="e.g. PIGsltMj3gFMR34aFDI3"
-                placeholderTextColor={Colors.textMuted}
-                value={voiceId}
-                onChangeText={setVoiceId}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+              <Text style={styles.nameLabel}>Voice</Text>
+              <View style={styles.voiceToggleRow}>
+                {VOICE_OPTIONS.map((opt) => (
+                  <TouchableOpacity
+                    key={opt.id}
+                    style={[
+                      styles.voiceToggleBtn,
+                      voiceId === opt.id && styles.voiceToggleBtnActive,
+                    ]}
+                    onPress={() => setVoiceId(opt.id)}
+                    activeOpacity={0.8}
+                  >
+                    <Text
+                      style={[
+                        styles.voiceToggleText,
+                        voiceId === opt.id && styles.voiceToggleTextActive,
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
 
             <TouchableOpacity
@@ -744,6 +760,31 @@ const styles = StyleSheet.create({
     fontSize: 16,
     borderWidth: 1.5,
     borderColor: Colors.border,
+  },
+  voiceToggleRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  voiceToggleBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: "center",
+    backgroundColor: Colors.surface,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  voiceToggleBtnActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  voiceToggleText: {
+    color: Colors.textSecondary,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  voiceToggleTextActive: {
+    color: Colors.white,
   },
   animateButton: {
     backgroundColor: Colors.primary,

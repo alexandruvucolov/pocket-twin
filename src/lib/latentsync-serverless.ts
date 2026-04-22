@@ -97,7 +97,7 @@ export async function submitLatentSyncJob(
         source_image_base64: params.sourceImageBase64,
         source_image_mime_type: params.sourceImageMimeType,
         audio_base64: params.audioBase64,
-        num_inference_steps: params.numInferenceSteps ?? 6,
+        num_inference_steps: params.numInferenceSteps ?? 4,
         bbox_shift: params.bboxShift ?? 0,
       },
     }),
