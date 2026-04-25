@@ -38,8 +38,8 @@ import {
 const { width, height } = Dimensions.get("window");
 
 const VOICE_OPTIONS = [
-  { label: "♂  Male", id: "5BZv9Z02hAMUmkkcd5Hj" },
-  { label: "♀  Female", id: "3z9q8Y7plHbvhDZehEII" },
+  { label: "♂  Male", id: "UgBBYS2sOqTuMpoF3BR0" },
+  { label: "♀  Female", id: "XW70ikSsadUbinwLMZ5w" },
 ] as const;
 
 type Step = "pick" | "camera" | "preview" | "animating" | "done";
@@ -53,7 +53,7 @@ export default function UploadScreen() {
   const [step, setStep] = useState<Step>("pick");
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [avatarName, setAvatarName] = useState("");
-  const [voiceId, setVoiceId] = useState(VOICE_OPTIONS[1].id);
+  const [voiceId, setVoiceId] = useState(VOICE_OPTIONS[0].id);
   const [progress, setProgress] = useState(0);
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<"front" | "back">("front");

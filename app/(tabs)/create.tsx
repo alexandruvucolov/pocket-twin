@@ -17,6 +17,8 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
 import * as Sharing from "expo-sharing";
+import * as Clipboard from "expo-clipboard";
+import * as VideoThumbnails from "expo-video-thumbnails";
 import { File, Paths } from "expo-file-system";
 import {
   SafeAreaView,
@@ -30,10 +32,11 @@ import {
   CreateJobStatus,
   isCreateConfigured,
 } from "@/lib/create-serverless";
+import { enhancePrompt } from "@/lib/openai";
 
 const { width } = Dimensions.get("window");
 
-function VideoPlayerResult({ uri, style }: { uri: string; style: any }) {
+function VideoPlayerResult({ uri, style, contentFit = "cover" }: { uri: string; style: any; contentFit?: "cover" | "contain" | "fill" }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = true;
     p.play();
@@ -42,7 +45,7 @@ function VideoPlayerResult({ uri, style }: { uri: string; style: any }) {
     <VideoView
       player={player}
       style={style}
-      contentFit="cover"
+      contentFit={contentFit}
       nativeControls
     />
   );
@@ -50,6 +53,23 @@ function VideoPlayerResult({ uri, style }: { uri: string; style: any }) {
 
 type Mode = "image" | "video";
 type VideoSource = "text" | "image";
+type VideoFormat = "landscape" | "portrait" | "square";
+
+// FLUX-specific trigger words for each style chip — appended after GPT enhancement
+// so GPT cannot dilute or overwrite the style.
+const STYLE_PROMPT_SUFFIX: Record<string, string> = {
+  "Photorealistic": "photorealistic, hyperrealistic, 8K UHD, DSLR photograph, sharp focus, natural skin texture, high detail",
+  "Anime": "anime style, cel shading, manga illustration, vibrant saturated colors, Studio Ghibli aesthetic, detailed line art, 2D animation",
+  "Cinematic": "cinematic photography, movie still, dramatic lighting, anamorphic lens bokeh, film grain, widescreen composition, Hollywood color grade",
+  "Oil Painting": "oil painting on canvas, impasto technique, visible brushstrokes, textured canvas, classical fine art, rich deep colors, old masters style",
+  "3D Render": "3D CGI render, Blender octane render, ray tracing, subsurface scattering, physically based rendering, ultra-detailed 3D, ambient occlusion",
+};
+
+const VIDEO_FORMAT_SIZES: Record<VideoFormat, { width: number; height: number; label: string }> = {
+  portrait:  { width: 480, height: 832, label: "Portrait" },
+  landscape: { width: 832, height: 480, label: "Landscape" },
+  square:    { width: 624, height: 624, label: "Square" },
+};
 
 export default function CreateScreen() {
   const insets = useSafeAreaInsets();
@@ -57,8 +77,9 @@ export default function CreateScreen() {
   const [videoSource, setVideoSource] = useState<VideoSource>("text");
   const [prompt, setPrompt] = useState("");
   const [selectedDuration, setSelectedDuration] = useState<
-    "6s" | "15s" | "30s"
+    "6s" | "10s"
   >("6s");
+  const [selectedVideoFormat, setSelectedVideoFormat] = useState<VideoFormat>("portrait");
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<{
     uri: string;
@@ -67,9 +88,10 @@ export default function CreateScreen() {
   const [jobStatus, setJobStatus] = useState<CreateJobStatus | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [savedItems, setSavedItems] = useState<
-    { uri: string; type: "image" | "video" }[]
+    { uri: string; type: "image" | "video"; thumbnail?: string }[]
   >([]);
   const [savedMessage, setSavedMessage] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [lightboxItem, setLightboxItem] = useState<{
     uri: string;
     type: "image" | "video";
@@ -104,7 +126,8 @@ export default function CreateScreen() {
   };
 
   const handleSave = async () => {
-    if (!result) return;
+    if (!result || isSaving || savedMessage) return;
+    setIsSaving(true);
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== "granted") {
@@ -128,11 +151,19 @@ export default function CreateScreen() {
         localUri = downloaded.uri;
       }
       await MediaLibrary.saveToLibraryAsync(localUri);
-      // Add to saved gallery
-      const savedUri = result;
-      const savedMode = mode;
-      setSavedItems((prev) => [{ uri: savedUri, type: savedMode }, ...prev]);
-      // Show "Saved to gallery" banner in the result card, then dismiss after 2s
+      // Add to gallery thumbnails
+      if (mode === "video") {
+        let thumbnail: string | undefined;
+        try {
+          const t = await VideoThumbnails.getThumbnailAsync(result, { time: 0 });
+          thumbnail = t.uri;
+        } catch (_) {}
+        setSavedItems((prev) => [{ uri: result, type: "video", thumbnail }, ...prev]);
+      } else {
+        setSavedItems((prev) => [{ uri: result, type: "image" }, ...prev]);
+      }
+      // Show banner in the result card, then dismiss after 2s
+      setIsSaving(false);
       setSavedMessage(true);
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
       savedTimerRef.current = setTimeout(() => {
@@ -141,6 +172,7 @@ export default function CreateScreen() {
         setJobStatus(null);
       }, 2000);
     } catch (e: any) {
+      setIsSaving(false);
       Alert.alert("Save failed", e.message);
     }
   };
@@ -186,39 +218,57 @@ export default function CreateScreen() {
     setResult(null);
     setJobStatus({ phase: "queued", progress: 0 });
 
-    const promptWithStyle =
-      selectedStyle && mode === "image"
-        ? `${prompt.trim()}, ${selectedStyle} style`
-        : prompt.trim();
+    // Pass the raw prompt to GPT (no style tag — GPT is unreliable at preserving style).
+    // We append FLUX-specific style keywords deterministically after enhancement.
+    const rawPrompt = prompt.trim();
 
     try {
+      // Enhance the prompt with GPT-4o-mini before sending to the model
+      let enhanced = rawPrompt;
+      try {
+        enhanced = await enhancePrompt(rawPrompt, mode);
+      } catch (_) {
+        // If enhancement fails, fall back to original prompt silently
+      }
+
+      // Append FLUX style trigger words after GPT enhancement so they cannot be overwritten
+      if (selectedStyle && mode === "image" && STYLE_PROMPT_SUFFIX[selectedStyle]) {
+        enhanced = `${enhanced}, ${STYLE_PROMPT_SUFFIX[selectedStyle]}`;
+      }
+
       const input =
         mode === "image"
           ? referenceImage
             ? {
                 task: "image_to_image" as const,
-                prompt: promptWithStyle,
+                prompt: enhanced,
                 image: referenceImage.base64,
-                num_inference_steps: 8,
-                strength: 0.75,
+                num_inference_steps: 20,
+                strength: 0.9,
               }
             : {
                 task: "text_to_image" as const,
-                prompt: promptWithStyle,
+                prompt: enhanced,
+                width: 768,
+                height: 1024,
                 num_inference_steps: 4,
               }
           : videoSource === "text"
             ? {
                 task: "text_to_video" as const,
-                prompt: promptWithStyle,
+                prompt: enhanced,
                 duration: selectedDuration,
+                width: VIDEO_FORMAT_SIZES[selectedVideoFormat].width,
+                height: VIDEO_FORMAT_SIZES[selectedVideoFormat].height,
                 num_inference_steps: 20,
               }
             : {
                 task: "image_to_video" as const,
-                prompt: promptWithStyle,
+                prompt: enhanced,
                 image: referenceImage?.base64 ?? "",
                 duration: selectedDuration,
+                width: VIDEO_FORMAT_SIZES[selectedVideoFormat].width,
+                height: VIDEO_FORMAT_SIZES[selectedVideoFormat].height,
                 num_inference_steps: 20,
               };
 
@@ -265,7 +315,15 @@ export default function CreateScreen() {
         <View style={styles.modeRow}>
           <TouchableOpacity
             style={[styles.modeBtn, mode === "image" && styles.modeBtnActive]}
-            onPress={() => setMode("image")}
+            onPress={() => {
+              setMode("image");
+              setPrompt("");
+              setReferenceImage(null);
+              setSelectedStyle(null);
+              setSelectedVideoFormat("portrait");
+              setResult(null);
+              setJobStatus(null);
+            }}
           >
             <Ionicons
               name="image-outline"
@@ -284,7 +342,15 @@ export default function CreateScreen() {
 
           <TouchableOpacity
             style={[styles.modeBtn, mode === "video" && styles.modeBtnActive]}
-            onPress={() => setMode("video")}
+            onPress={() => {
+              setMode("video");
+              setPrompt("");
+              setReferenceImage(null);
+              setSelectedStyle(null);
+              setSelectedVideoFormat("portrait");
+              setResult(null);
+              setJobStatus(null);
+            }}
           >
             <Ionicons
               name="videocam-outline"
@@ -450,7 +516,7 @@ export default function CreateScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Duration</Text>
             <View style={styles.chipRow}>
-              {(["6s", "15s", "30s"] as const).map((d) => (
+              {(["6s", "10s"] as const).map((d) => (
                 <TouchableOpacity
                   key={d}
                   style={[
@@ -466,6 +532,34 @@ export default function CreateScreen() {
                     ]}
                   >
                     {d}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Format picker (video only) */}
+        {mode === "video" && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Format</Text>
+            <View style={styles.chipRow}>
+              {(Object.keys(VIDEO_FORMAT_SIZES) as VideoFormat[]).map((f) => (
+                <TouchableOpacity
+                  key={f}
+                  style={[
+                    styles.chip,
+                    selectedVideoFormat === f && styles.chipActive,
+                  ]}
+                  onPress={() => setSelectedVideoFormat(f)}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      selectedVideoFormat === f && styles.chipTextActive,
+                    ]}
+                  >
+                    {VIDEO_FORMAT_SIZES[f].label}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -521,17 +615,10 @@ export default function CreateScreen() {
           <View style={styles.resultPlaceholder}>
             <ActivityIndicator color={Colors.primary} size="large" />
             <Text style={styles.resultPlaceholderText}>
-              {jobStatus.phase === "queued"
-                ? "Waiting for worker\u2026"
-                : mode === "image"
-                  ? "Generating image\u2026"
-                  : `Rendering video\u2026 ${jobStatus.progress ?? 0}%`}
+              {mode === "image"
+                ? "Generating image\u2026"
+                : `Rendering video\u2026 ${jobStatus.progress ?? 0}%`}
             </Text>
-            {jobStatus.phase === "queued" && (
-              <Text style={styles.warmupHint}>
-                First job wakes the worker (~1\u20132 min) \u2615
-              </Text>
-            )}
             <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel}>
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </TouchableOpacity>
@@ -553,7 +640,7 @@ export default function CreateScreen() {
               <View style={styles.savedBanner}>
                 <Ionicons name="checkmark-circle" size={20} color="#4ADE80" />
                 <Text style={styles.savedBannerText}>
-                  Picture saved to gallery
+                  {mode === "video" ? "Video saved to gallery" : "Picture saved to gallery"}
                 </Text>
               </View>
             )}
@@ -561,7 +648,7 @@ export default function CreateScreen() {
               <TouchableOpacity
                 style={styles.resultBtn}
                 onPress={handleSave}
-                disabled={savedMessage}
+                disabled={isSaving || savedMessage}
               >
                 <Ionicons
                   name="download-outline"
@@ -606,7 +693,7 @@ export default function CreateScreen() {
                   activeOpacity={0.85}
                 >
                   <Image
-                    source={{ uri: item.uri }}
+                    source={{ uri: item.thumbnail ?? item.uri }}
                     style={styles.galleryThumb}
                     resizeMode="cover"
                   />
@@ -647,11 +734,64 @@ export default function CreateScreen() {
           >
             <Ionicons name="close" size={28} color={Colors.white} />
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.lightboxShare}
+            onPress={async () => {
+              if (!lightboxItem) return;
+              try {
+                let localUri: string;
+                if (lightboxItem.uri.startsWith("data:image/")) {
+                  const b64 = lightboxItem.uri.replace(/^data:image\/\w+;base64,/, "");
+                  const cacheFile = new File(Paths.cache, `pocket-twin-share-${Date.now()}.png`);
+                  await cacheFile.write(b64, { encoding: "base64" });
+                  localUri = cacheFile.uri;
+                } else {
+                  const downloaded = await File.downloadFileAsync(lightboxItem.uri, Paths.cache);
+                  localUri = downloaded.uri;
+                }
+                await Sharing.shareAsync(localUri, {
+                  mimeType: lightboxItem.type === "video" ? "video/mp4" : "image/png",
+                  dialogTitle: "Share your creation",
+                });
+              } catch (e: any) {
+                if (!e.message?.includes("cancelled")) {
+                  Alert.alert("Share failed", e.message);
+                }
+              }
+            }}
+          >
+            <Ionicons name="share-outline" size={28} color={Colors.white} />
+          </TouchableOpacity>
+          {lightboxItem && lightboxItem.type === "image" && (
+            <TouchableOpacity
+              style={styles.lightboxCopy}
+              onPress={async () => {
+                if (!lightboxItem) return;
+                try {
+                  let b64: string;
+                  if (lightboxItem.uri.startsWith("data:image/")) {
+                    b64 = lightboxItem.uri.replace(/^data:image\/\w+;base64,/, "");
+                  } else {
+                    const downloaded = await File.downloadFileAsync(lightboxItem.uri, Paths.cache);
+                    const bytes = await new File(downloaded.uri).bytes();
+                    b64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+                  }
+                  await Clipboard.setImageAsync(b64);
+                  Alert.alert("Copied", "Image copied to clipboard");
+                } catch (e: any) {
+                  Alert.alert("Copy failed", e.message);
+                }
+              }}
+            >
+              <Ionicons name="copy-outline" size={28} color={Colors.white} />
+            </TouchableOpacity>
+          )}
           {lightboxItem &&
             (lightboxItem.type === "video" ? (
               <VideoPlayerResult
                 uri={lightboxItem.uri}
                 style={styles.lightboxMedia}
+                contentFit="contain"
               />
             ) : (
               <Image
@@ -832,12 +972,6 @@ const styles = StyleSheet.create({
     color: Colors.primaryLight,
     fontWeight: "700",
   },
-  warmupHint: {
-    color: Colors.textMuted,
-    fontSize: 12,
-    textAlign: "center",
-    marginTop: 4,
-  },
   cancelBtn: {
     marginTop: 14,
     paddingHorizontal: 24,
@@ -999,8 +1133,26 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 6,
   },
+  lightboxShare: {
+    position: "absolute",
+    top: 52,
+    left: 20,
+    zIndex: 10,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderRadius: 20,
+    padding: 6,
+  },
+  lightboxCopy: {
+    position: "absolute",
+    top: 52,
+    left: 76,
+    zIndex: 10,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderRadius: 20,
+    padding: 6,
+  },
   lightboxMedia: {
-    width: width,
-    height: width,
+    width: "100%",
+    flex: 1,
   },
 });

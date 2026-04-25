@@ -47,7 +47,7 @@ export async function getChatReply(
       model: "gpt-4o-mini",
       messages: openAiMessages,
       temperature: 0.85,
-      max_tokens: 50,
+      max_tokens: 30,
     }),
   });
 
@@ -130,4 +130,53 @@ export async function transcribeAudio(localUri: string): Promise<string> {
 
   const data = JSON.parse(body) as { text: string };
   return data.text?.trim() ?? "";
+}
+
+/**
+ * Rewrite a short user prompt into a detailed, model-optimised generation prompt.
+ * @param userPrompt  Raw text typed by the user
+ * @param mode        "image" | "video"
+ * @returns Enhanced prompt string
+ */
+export async function enhancePrompt(
+  userPrompt: string,
+  mode: "image" | "video",
+): Promise<string> {
+  const apiKey = getApiKey();
+
+  const systemPrompt =
+    mode === "video"
+      ? `You are a prompt engineer specialising in AI video generation with Wan 2.1.
+Rewrite the user's prompt into a detailed, vivid generation prompt.
+Include: subject description, action/motion, camera movement (e.g. slow dolly-in, tracking shot), lighting, environment, mood, and visual style.
+Keep it under 120 words. Return ONLY the rewritten prompt, no explanation.`
+      : `You are a prompt engineer specialising in AI image generation with FLUX.
+Rewrite the user's prompt into a detailed, vivid generation prompt focusing on the subject, scene, composition, lighting, colour palette, and mood.
+Do NOT add any art style, rendering style, or quality tags — those will be appended separately.
+Keep it under 80 words. Return ONLY the rewritten prompt, no explanation.`;
+
+  const res = await fetch(OPENAI_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 200,
+    }),
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new Error(`OpenAI error (${res.status}): ${text}`);
+
+  const data = JSON.parse(text) as {
+    choices: { message: { content: string } }[];
+  };
+  return data.choices?.[0]?.message?.content?.trim() || userPrompt;
 }

@@ -50,7 +50,7 @@ export interface TextToVideoInput {
   task: "text_to_video";
   prompt: string;
   negative_prompt?: string;
-  duration: "6s" | "15s" | "30s";
+  duration: "6s" | "10s";
   width?: number;
   height?: number;
   num_inference_steps?: number;
@@ -62,7 +62,7 @@ export interface ImageToVideoInput {
   prompt: string;
   negative_prompt?: string;
   image: string; // base64-encoded image
-  duration: "6s" | "15s" | "30s";
+  duration: "6s" | "10s";
   width?: number;
   height?: number;
   num_inference_steps?: number;
@@ -107,19 +107,12 @@ export function isCreateConfigured(): boolean {
 export async function warmupCreateWorker(): Promise<void> {
   if (!isCreateConfigured()) return;
   try {
-    // Warm both endpoints in parallel
-    await Promise.allSettled([
-      fetch(imageUrl(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "warmup" }),
-      }),
-      fetch(videoUrl(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "warmup" }),
-      }),
-    ]);
+    // Only warm the image endpoint (A10G) — video (H100) is too expensive to pre-warm
+    await fetch(imageUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task: "warmup" }),
+    });
   } catch (_) {
     // best-effort
   }

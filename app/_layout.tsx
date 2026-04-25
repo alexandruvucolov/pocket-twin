@@ -1,8 +1,12 @@
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
-import { Platform } from "react-native";
+import { Platform, LogBox } from "react-native";
 import * as NavigationBar from "expo-navigation-bar";
+
+// expo-video internally calls expo-keep-awake when the Android activity is
+// already gone (background/navigation teardown). Safe to ignore.
+LogBox.ignoreLogs(["ExpoKeepAwake.activate"]);
 import { AuthProvider } from "../src/context/AuthContext";
 import { AvatarProvider } from "../src/context/AvatarContext";
 import { Colors } from "../src/constants/colors";

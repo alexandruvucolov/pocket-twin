@@ -6,7 +6,7 @@ const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1";
 // Can be overridden with EXPO_PUBLIC_ELEVENLABS_VOICE_ID in .env
 // Example common voice IDs: Adam=pNInz6obpgDQGcFmaJgB, Josh=TxGEqnHWrfWFTfGW9XjX
 const DEFAULT_VOICE_ID = (
-  process.env.EXPO_PUBLIC_ELEVENLABS_VOICE_ID ?? "pNInz6obpgDQGcFmaJgB"
+  process.env.EXPO_PUBLIC_ELEVENLABS_VOICE_ID ?? "UgBBYS2sOqTuMpoF3BR0"
 ).trim();
 
 function bytesToBase64(bytes: Uint8Array): string {

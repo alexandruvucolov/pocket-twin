@@ -213,6 +213,10 @@ def _load_models() -> bool:
                 _audio_feat_length = [int(_audio_feat_length_raw)]
             dtype = torch.float16
 
+            # Prevent CUDA memory fragmentation on H100/A100
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+            torch.cuda.empty_cache()
+
             logger.info(
                 "LatentSync: config loaded — resolution=%d num_frames=%d audio_feat_length=%s",
                 _infer_width, _num_frames, _audio_feat_length,
@@ -364,7 +368,14 @@ def _load_models() -> bool:
         except Exception as exc:
             _last_synthesize_reason = f"Model loading exception: {exc}"
             logger.warning("LatentSync: model loading failed: %s", exc, exc_info=True)
-            _models_available = False
+            # Reset to None (not False) so the next request can retry.
+            # Also free any partially-allocated CUDA memory.
+            _models_available = None
+            try:
+                import torch as _torch
+                _torch.cuda.empty_cache()
+            except Exception:
+                pass
             return False
 
         finally:
@@ -525,6 +536,83 @@ def synthesize(
         _last_synthesize_reason = str(exc)
         logger.warning("LatentSync: synthesize failed: %s", exc, exc_info=True)
         return []
+
+    finally:
+        os.chdir(orig_cwd)
+        if tmp_out:
+            try:
+                os.unlink(tmp_out)
+            except OSError:
+                pass
+
+
+def synthesize_to_path(
+    prep: "AvatarPrep",
+    audio_path: str,
+    fps: int = 25,
+    num_inference_steps: int = 10,
+) -> "str | None":
+    """Like synthesize() but returns the pipeline output file path directly.
+
+    This avoids reading all frames into RAM and re-encoding them — the caller
+    just muxes audio into the returned file with ffmpeg.
+
+    The caller is responsible for deleting the returned file.
+    Returns None on failure; check _last_synthesize_reason for details.
+    """
+    global _last_synthesize_reason
+
+    if prep is None:
+        _last_synthesize_reason = "avatar prep is None"
+        return None
+    if not _load_models():
+        _last_synthesize_reason = "models unavailable"
+        return None
+    if _pipeline is None:
+        _last_synthesize_reason = "pipeline is None after load"
+        return None
+
+    orig_cwd = os.getcwd()
+    tmp_out = None
+
+    try:
+        import torch  # noqa: PLC0415
+
+        _add_latentsync_to_path()
+        os.chdir(LATENTSYNC_DIR)
+
+        tmp_fd, tmp_out = tempfile.mkstemp(suffix=".mp4", dir="/tmp")
+        os.close(tmp_fd)
+
+        with _synthesis_lock:
+            _pipeline(
+                video_path=prep.avatar_video_path,
+                audio_path=audio_path,
+                video_out_path=tmp_out,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=1.5,
+                weight_dtype=torch.float16,
+                width=_infer_width,
+                height=_infer_height,
+            )
+
+        if not os.path.exists(tmp_out) or os.path.getsize(tmp_out) == 0:
+            _last_synthesize_reason = "pipeline produced empty output file"
+            logger.warning("LatentSync: pipeline produced empty output: %s", tmp_out)
+            return None
+
+        elapsed_str = ""
+        logger.info("LatentSync: synthesize_to_path complete → %s", tmp_out)
+        _last_synthesize_reason = ""
+
+        result = tmp_out
+        tmp_out = None  # transfer ownership to caller — don't delete in finally
+        return result
+
+    except Exception as exc:
+        _last_synthesize_reason = str(exc)
+        logger.warning("LatentSync: synthesize_to_path failed: %s", exc, exc_info=True)
+        return None
 
     finally:
         os.chdir(orig_cwd)

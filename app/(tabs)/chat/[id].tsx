@@ -31,7 +31,7 @@ import {
   submitLatentSyncJob,
   pollLatentSyncJob,
   warmupLatentSyncWorker,
-} from "../../../src/lib/latentsync-serverless";
+} from "../../../src/lib/modal-lipsync";
 import { transcribeAudio } from "../../../src/lib/openai";
 import { textToSpeech, textToSpeechBase64 } from "../../../src/lib/elevenlabs";
 
@@ -95,6 +95,9 @@ export default function ChatScreen() {
     "preparing" | "queued" | "running" | "downloading"
   >("preparing");
   const queueTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // True once the first successful lipsync reply has completed this session.
+  // The 90 s cold-start warning is only shown before the first reply.
+  const hasWarmRepliedRef = useRef(false);
   const videoPlayer = useVideoPlayer(null);
   const [isResponseVideo, setIsResponseVideo] = useState(false);
   const responseVideoResolverRef = useRef<(() => void) | null>(null);
@@ -414,15 +417,23 @@ export default function ChatScreen() {
   // old Firestore messages and new messages sent in this session.
   const sessionStartedAtRef = useRef(Date.now());
 
+  // Warmup: fires exactly once per screen focus, independent of any other deps.
+  // Keeping this separate from the scroll effect below prevents it from re-firing
+  // every time composerHeight changes (keyboard open/close, input resize, etc.).
   useFocusEffect(
     useCallback(() => {
-      // Fire a warmup ping so the RunPod worker starts booting before the user
-      // sends their first message — reduces 22%-stuck cold-start perception.
       if (isLatentSyncServerlessConfigured()) {
         warmupLatentSyncWorker().catch(() => undefined);
       }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  );
+
+  // Scroll-to-latest: fires on focus and whenever composerHeight changes.
+  useFocusEffect(
+    useCallback(() => {
       return scrollToLatest(false);
-    }, [chatMessages.length, composerHeight, scrollToLatest]),
+    }, [composerHeight, scrollToLatest]),
   );
 
   const handleSend = async () => {
@@ -844,7 +855,7 @@ export default function ChatScreen() {
     (videoUrl: string): Promise<void> => {
       return new Promise<void>((resolve) => {
         isPlayingResponseRef.current = true;
-        videoFadeAnim.setValue(1); // ensure fully visible before response starts
+        videoFadeAnim.setValue(0); // hidden until readyToPlay — static image shows while buffering
         setIsResponseVideo(true);
         setDisplayedVideoUrl(videoUrl);
 
@@ -880,6 +891,12 @@ export default function ChatScreen() {
           const status = event.status as string;
           if (status === "readyToPlay") {
             hasStartedPlaying = true;
+            // Fade in now that the first frame is ready — no black flash
+            Animated.timing(videoFadeAnim, {
+              toValue: 1,
+              duration: 180,
+              useNativeDriver: true,
+            }).start();
             return;
           }
           if (
@@ -987,33 +1004,13 @@ export default function ChatScreen() {
 
         stopQueueTimer();
         setGenerationProgress(100);
+        hasWarmRepliedRef.current = true;
 
-        // 5. Download video to local cache so VideoView plays instantly (no buffering)
-        setGenerationPhase("downloading");
-        generationPhaseRef.current = "downloading";
-        let localVideoUri = videoUrl;
-        try {
-          const localPath =
-            (FileSystem.cacheDirectory ?? "") + `response_${Date.now()}.mp4`;
-          const { uri } = await FileSystem.downloadAsync(videoUrl, localPath);
-          localVideoUri = uri;
-        } catch (dlErr) {
-          console.warn(
-            "[LatentSync] video pre-download failed, using remote URL:",
-            dlErr,
-          );
-        }
+        // 5. Play response video; await for voice loop sync
         setIsGenerating(false);
 
         // 6. Play response video; await for voice loop sync
-        await waitForResponseVideoPlayback(localVideoUri);
-
-        // Clean up cached file after playback
-        if (localVideoUri !== videoUrl) {
-          FileSystem.deleteAsync(localVideoUri, { idempotent: true }).catch(
-            () => {},
-          );
-        }
+        await waitForResponseVideoPlayback(videoUrl);
       } catch (err) {
         console.warn("[LatentSync] generation failed:", err);
         stopQueueTimer();
@@ -1048,18 +1045,36 @@ export default function ChatScreen() {
     <SafeAreaView style={styles.root} edges={["top"]}>
       {/* ── LAYER 1 (behind): Avatar panel ── absolute, always visible */}
       <Animated.View style={[styles.avatarPanel]}>
+        {/* Static avatar always rendered as background */}
+        <Image
+          source={{ uri: avatar.imageUri }}
+          style={styles.avatarPanelImage}
+        />
+        {displayedVideoUrl ? (
+          <Animated.View
+            style={[StyleSheet.absoluteFill, { opacity: videoFadeAnim }]}
+          >
+            <VideoView
+              player={videoPlayer}
+              style={styles.avatarPanelImage}
+              contentFit="cover"
+              nativeControls={false}
+            />
+          </Animated.View>
+        ) : null}
+        <View style={styles.avatarPanelOverlay} />
+        {/* Loading overlay rendered on top when generating — video buffers underneath */}
         {isGenerating ? (
-          /* ── Loading overlay: blurred avatar + phase-aware status ── */
           <>
             <Image
               source={{ uri: avatar.imageUri }}
-              style={[styles.avatarPanelImage, styles.avatarPanelBlurred]}
+              style={[styles.avatarPanelImage, styles.avatarPanelBlurred, StyleSheet.absoluteFill]}
               blurRadius={18}
             />
             <View style={styles.generatingOverlay}>
-              {generationPhase === "queued" ? (
+              {generationPhase === "queued" && !hasWarmRepliedRef.current ? (
                 <Text style={styles.generatingWarmupLabel}>
-                  First reply takes ~3 min{"\n"}to wake the worker ☕
+                  First reply may take up to 90 sec.{"\n"}Please wait ☕
                 </Text>
               ) : null}
               <ActivityIndicator color={Colors.white} size={56} />
@@ -1070,28 +1085,7 @@ export default function ChatScreen() {
               ) : null}
             </View>
           </>
-        ) : (
-          <>
-            {/* Static avatar always rendered as background — prevents black flash during video swap */}
-            <Image
-              source={{ uri: avatar.imageUri }}
-              style={styles.avatarPanelImage}
-            />
-            {displayedVideoUrl ? (
-              <Animated.View
-                style={[StyleSheet.absoluteFill, { opacity: videoFadeAnim }]}
-              >
-                <VideoView
-                  player={videoPlayer}
-                  style={styles.avatarPanelImage}
-                  contentFit="cover"
-                  nativeControls={false}
-                />
-              </Animated.View>
-            ) : null}
-          </>
-        )}
-        {!isGenerating ? <View style={styles.avatarPanelOverlay} /> : null}
+        ) : null}
         {/* Header overlaid on avatar */}
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity
