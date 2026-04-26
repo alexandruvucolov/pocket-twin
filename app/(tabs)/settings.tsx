@@ -7,6 +7,7 @@ import {
   ScrollView,
   Alert,
   Image,
+  Linking,
 } from "react-native";
 import {
   SafeAreaView,
@@ -19,13 +20,13 @@ import { useAuth } from "@/context/AuthContext";
 import { useAvatars } from "@/context/AvatarContext";
 
 function SettingsRow({
-  emoji,
+  icon,
   label,
   value,
   onPress,
   danger = false,
 }: {
-  emoji: string;
+  icon: React.ComponentProps<typeof Ionicons>["name"];
   label: string;
   value?: string;
   onPress?: () => void;
@@ -39,7 +40,13 @@ function SettingsRow({
       activeOpacity={0.7}
     >
       <View style={styles.rowLeft}>
-        <Text style={styles.rowEmoji}>{emoji}</Text>
+        <View style={[styles.rowIconWrap, danger && styles.rowIconWrapDanger]}>
+          <Ionicons
+            name={icon}
+            size={18}
+            color={danger ? "#ef4444" : Colors.textSecondary}
+          />
+        </View>
         <Text style={[styles.rowLabel, danger && styles.rowLabelDanger]}>
           {label}
         </Text>
@@ -55,9 +62,40 @@ function SettingsRow({
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const { user, signOut, deleteAccount } = useAuth();
   const { avatars, coins, clearAvatars } = useAvatars();
   const insets = useSafeAreaInsets();
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      "Delete Account",
+      "This will permanently delete your account and all your data. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Account",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteAccount();
+              router.replace("/(auth)/login");
+            } catch (err: unknown) {
+              const msg =
+                err instanceof Error ? err.message : String(err);
+              if (msg.includes("requires-recent-login")) {
+                Alert.alert(
+                  "Re-login required",
+                  "For security, please sign out and sign back in before deleting your account.",
+                );
+              } else {
+                Alert.alert("Error", "Could not delete account. Please try again.");
+              }
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const handleLogout = () => {
     Alert.alert("Sign Out", "Are you sure you want to sign out?", [
@@ -65,8 +103,8 @@ export default function SettingsScreen() {
       {
         text: "Sign Out",
         style: "destructive",
-        onPress: () => {
-          signOut();
+        onPress: async () => {
+          await signOut();
           router.replace("/(auth)/login");
         },
       },
@@ -113,19 +151,19 @@ export default function SettingsScreen() {
         <Text style={styles.sectionLabel}>Account</Text>
         <View style={styles.section}>
           <SettingsRow
-            emoji="👤"
+            icon="person-outline"
             label="Edit Profile"
             onPress={() => router.push("/profile")}
           />
           <View style={styles.divider} />
           <SettingsRow
-            emoji="🪙"
+            icon="wallet-outline"
             label="Buy Coins"
             onPress={() => router.push("/buy-coins")}
           />
           <View style={styles.divider} />
           <SettingsRow
-            emoji="🪞"
+            icon="images-outline"
             label="Avatars Created"
             value={`${avatars.length}`}
           />
@@ -135,7 +173,7 @@ export default function SettingsScreen() {
         <Text style={styles.sectionLabel}>App</Text>
         <View style={styles.section}>
           <SettingsRow
-            emoji="ℹ️"
+            icon="information-circle-outline"
             label="About Pocket Twin"
             onPress={() =>
               Alert.alert(
@@ -146,15 +184,31 @@ export default function SettingsScreen() {
           />
           <View style={styles.divider} />
           <SettingsRow
-            emoji="📧"
-            label="Contact Support"
-            onPress={() =>
-              Alert.alert("Support", "Email us at hello@pockettwin.app")
-            }
+            icon="lock-closed-outline"
+            label="Privacy Policy"
+            onPress={() => Linking.openURL("https://alexandruvucolov.github.io/pockettwin-legal/privacy.html")}
           />
           <View style={styles.divider} />
           <SettingsRow
-            emoji="⭐"
+            icon="document-text-outline"
+            label="Terms of Service"
+            onPress={() => Linking.openURL("https://alexandruvucolov.github.io/pockettwin-legal/terms.html")}
+          />
+          <View style={styles.divider} />
+          <SettingsRow
+            icon="flag-outline"
+            label="Report an Issue"
+            onPress={() => Linking.openURL("mailto:sales@atech-tools.com?subject=Issue%20Report")}
+          />
+          <View style={styles.divider} />
+          <SettingsRow
+            icon="mail-outline"
+            label="Contact Support"
+            onPress={() => Linking.openURL("mailto:sales@atech-tools.com")}
+          />
+          <View style={styles.divider} />
+          <SettingsRow
+            icon="star-outline"
             label="Rate the App"
             onPress={() =>
               Alert.alert(
@@ -169,7 +223,7 @@ export default function SettingsScreen() {
         <Text style={styles.sectionLabel}>Danger Zone</Text>
         <View style={styles.section}>
           <SettingsRow
-            emoji="🗑️"
+            icon="trash-outline"
             label="Delete All Avatars"
             danger
             onPress={() =>
@@ -199,7 +253,14 @@ export default function SettingsScreen() {
           />
           <View style={styles.divider} />
           <SettingsRow
-            emoji="🚪"
+            icon="person-remove-outline"
+            label="Delete Account"
+            danger
+            onPress={handleDeleteAccount}
+          />
+          <View style={styles.divider} />
+          <SettingsRow
+            icon="log-out-outline"
             label="Sign Out"
             danger
             onPress={handleLogout}
@@ -308,8 +369,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
   },
-  rowEmoji: {
-    fontSize: 18,
+  rowIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: Colors.surfaceHigh,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rowIconWrapDanger: {
+    backgroundColor: "#3f1212",
   },
   rowLabel: {
     color: Colors.text,

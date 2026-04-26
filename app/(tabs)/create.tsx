@@ -1,4 +1,5 @@
 import React, { useState, useRef } from "react";
+import { useRouter } from "expo-router";
 import { useVideoPlayer, VideoView } from "expo-video";
 import {
   View,
@@ -26,6 +27,8 @@ import {
 } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "@/constants/colors";
+import { COIN_COSTS } from "@/constants/dummy";
+import { useAvatars } from "@/context/AvatarContext";
 import {
   runCreateJob,
   CreateJobStatus,
@@ -88,6 +91,8 @@ const VIDEO_FORMAT_SIZES: Record<
 
 export default function CreateScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { coins, spendCoins } = useAvatars();
   const [mode, setMode] = useState<Mode>("image");
   const [videoSource, setVideoSource] = useState<VideoSource>("text");
   const [prompt, setPrompt] = useState("");
@@ -239,6 +244,31 @@ export default function CreateScreen() {
     // Cancel any in-flight request before starting a new one
     abortRef.current?.abort();
     abortRef.current = new AbortController();
+
+    // Calculate coin cost for this generation
+    let cost = 0;
+    if (mode === "image") {
+      cost = referenceImage ? COIN_COSTS.imageToImage : COIN_COSTS.textToImage;
+    } else if (videoSource === "text") {
+      cost = selectedDuration === "15s" ? COIN_COSTS.t2v_15s
+           : selectedDuration === "10s" ? COIN_COSTS.t2v_10s
+           : COIN_COSTS.t2v_5s;
+    } else {
+      cost = selectedDuration === "10s" ? COIN_COSTS.i2v_10s : COIN_COSTS.i2v_5s;
+    }
+
+    if (coins < cost) {
+      Alert.alert(
+        "Not enough coins",
+        `This generation costs ${cost} 🪙 but you only have ${coins}. Buy more coins to continue.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Buy Coins", onPress: () => router.push("/buy-coins") },
+        ],
+      );
+      return;
+    }
+
     setResult(null);
     setJobStatus({ phase: "queued", progress: 0 });
 
@@ -308,6 +338,7 @@ export default function CreateScreen() {
         (s) => setJobStatus(s),
         abortRef.current.signal,
       );
+      spendCoins(cost);
       setResult(url);
       setJobStatus({ phase: "done", progress: 100, url });
     } catch (e: any) {
@@ -330,7 +361,7 @@ export default function CreateScreen() {
         <Text style={styles.headerTitle}>Create</Text>
         <View style={styles.coinBadge}>
           <Text style={styles.coinEmoji}>🪙</Text>
-          <Text style={styles.coinCount}>120</Text>
+          <Text style={styles.coinCount}>{coins}</Text>
         </View>
       </View>
 
@@ -613,7 +644,11 @@ export default function CreateScreen() {
             color={Colors.textMuted}
           />
           <Text style={styles.costText}>
-            {mode === "image" ? "~2 coins per image" : "~15 coins per video"}
+            {mode === "image"
+              ? `${referenceImage ? COIN_COSTS.imageToImage : COIN_COSTS.textToImage} coin per image`
+              : videoSource === "text"
+                ? `${ selectedDuration === "15s" ? COIN_COSTS.t2v_15s : selectedDuration === "10s" ? COIN_COSTS.t2v_10s : COIN_COSTS.t2v_5s } coins (${selectedDuration} T2V)`
+                : `${ selectedDuration === "10s" ? COIN_COSTS.i2v_10s : COIN_COSTS.i2v_5s } coins (${selectedDuration} I2V)`}
           </Text>
         </View>
 

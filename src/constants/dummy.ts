@@ -51,29 +51,44 @@ export const DUMMY_MESSAGES: Record<string, ChatMessage[]> = {
   "3": [],
 };
 
+export const COIN_COSTS = {
+  // Chat
+  avatarReply: 5,
+  // Image generation
+  textToImage: 1,
+  imageToImage: 1,
+  // Video generation — text-to-video (PixVerse C1)
+  t2v_5s: 14,
+  t2v_10s: 25,
+  t2v_15s: 38,
+  // Video generation — image-to-video (Kling 1.6)
+  i2v_5s: 14,
+  i2v_10s: 28,
+} as const;
+
 export const COIN_PACKS = [
   {
-    id: "coins_10",
-    label: "10 Coins",
-    price: "$1.99",
-    coins: 10,
+    id: "coins_100",
+    label: "100 Coins",
+    price: "$5.99",
+    coins: 100,
     popular: false,
     bonus: 0,
   },
   {
-    id: "coins_50",
-    label: "50 Coins",
-    price: "$7.99",
-    coins: 50,
+    id: "coins_200",
+    label: "200 Coins",
+    price: "$11.99",
+    coins: 200,
     popular: true,
-    bonus: 5,
+    bonus: 50,
   },
   {
-    id: "coins_100",
-    label: "100 Coins",
-    price: "$14.99",
-    coins: 100,
+    id: "coins_500",
+    label: "500 Coins",
+    price: "$29.99",
+    coins: 500,
     popular: false,
-    bonus: 15,
+    bonus: 250,
   },
 ];

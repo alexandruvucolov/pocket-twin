@@ -1,7 +1,8 @@
-import { Tabs } from "expo-router";
+import { Tabs, Redirect } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors } from "../../src/constants/colors";
+import { useAuth } from "../../src/context/AuthContext";
 
 function TabIcon({
   emoji,
@@ -27,6 +28,11 @@ function TabIcon({
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  const { user, isLoading } = useAuth();
+
+  if (!isLoading && !user) {
+    return <Redirect href="/(auth)/login" />;
+  }
 
   return (
     <Tabs

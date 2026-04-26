@@ -7,13 +7,21 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
+  GoogleSignin,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
+import {
+  GoogleAuthProvider,
   createUserWithEmailAndPassword,
+  deleteUser,
   onAuthStateChanged,
+  signInWithCredential,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   updateProfile,
 } from "firebase/auth";
 import {
+  deleteDoc,
   doc,
   getDoc,
   serverTimestamp,
@@ -21,6 +29,10 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { auth, db, firebaseEnabled } from "../lib/firebase";
+
+GoogleSignin.configure({
+  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+});
 
 export interface User {
   id: string;
@@ -34,8 +46,10 @@ interface AuthContextType {
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, name: string) => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
   updateUserProfile: (displayName: string, photoURL?: string) => Promise<void>;
+  deleteAccount: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -247,6 +261,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(false);
   };
 
+  const signInWithGoogle = async () => {
+    if (!firebaseEnabled || !auth) return;
+    try {
+      setIsLoading(true);
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      const signInResult = await GoogleSignin.signIn();
+      const idToken = signInResult.data?.idToken;
+      if (!idToken) throw new Error("Google Sign-In did not return an idToken");
+      const credential = GoogleAuthProvider.credential(idToken);
+      await signInWithCredential(auth, credential);
+    } catch (error: unknown) {
+      setIsLoading(false);
+      const code = (error as { code?: string })?.code;
+      if (code === statusCodes.SIGN_IN_CANCELLED) return; // user cancelled
+      if (code === statusCodes.IN_PROGRESS) return; // already in progress
+      throw error;
+    }
+  };
+
   const updateUserProfile = async (displayName: string, photoURL?: string) => {
     if (!firebaseEnabled || !auth?.currentUser) return;
     const currentUser = auth.currentUser;
@@ -278,6 +311,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = async () => {
     if (firebaseEnabled && auth) {
       await AsyncStorage.removeItem(SIGNED_IN_KEY).catch(() => {});
+      await GoogleSignin.signOut().catch(() => {});
       await firebaseSignOut(auth);
       return;
     }
@@ -285,9 +319,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const deleteAccount = async () => {
+    if (!firebaseEnabled || !auth?.currentUser) return;
+    const currentUser = auth.currentUser;
+
+    // Delete Firestore user document
+    if (db) {
+      await deleteDoc(doc(db, "users", currentUser.uid)).catch(() => {});
+    }
+
+    await AsyncStorage.removeItem(SIGNED_IN_KEY).catch(() => {});
+    // deleteUser requires a recently signed-in session; throws
+    // auth/requires-recent-login if the token is stale — callers must catch this.
+    await deleteUser(currentUser);
+    setUser(null);
+  };
+
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, signIn, signUp, signOut, updateUserProfile }}
+      value={{ user, isLoading, signIn, signUp, signInWithGoogle, signOut, updateUserProfile, deleteAccount }}
     >
       {children}
     </AuthContext.Provider>

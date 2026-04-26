@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "550886164841",
+    "project_id": "pocket-twin",
+    "storage_bucket": "pocket-twin.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:550886164841:android:77c60d2948ab0169dd15f8",
+        "android_client_info": {
+          "package_name": "com.pockettwin.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "550886164841-4urcgim5fgs25s7gfjur0csnboa2m0am.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pockettwin.app",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "550886164841-doj8td42dquoop54uqjavgg0de9u9jjj.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pockettwin.app",
+            "certificate_hash": "669d5b4fafb47d5401b41e3ad787930cf8f68115"
+          }
+        },
+        {
+          "client_id": "550886164841-it1luk3vua13ashe6kq6is393eo0ulgs.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAm5WkIsBKm1zI9rZEJNj9OFsTmvnvkiHI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "550886164841-it1luk3vua13ashe6kq6is393eo0ulgs.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

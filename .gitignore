@@ -45,3 +45,9 @@ __pycache__/
 # generated native folders
 /ios
 /android
+
+# firebase
+.firebase/
+functions/node_modules/
+functions/lib/
+functions/logs/

@@ -76,7 +76,7 @@ const ENABLE_LOCAL_PHONE_TTS =
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { avatars, coins, messages, sendMessage, spendCoin } = useAvatars();
+  const { avatars, coins, messages, sendMessage, spendCoin, spendCoins } = useAvatars();
   const insets = useSafeAreaInsets();
 
   const avatar = avatars.find((a: { id: string }) => a.id === id);
@@ -439,13 +439,13 @@ export default function ChatScreen() {
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || isSending || !!replyStatusText) return;
-    if (coins <= 0) {
+    if (coins < 5) {
       setShowNoCoins(true);
       return;
     }
     setInputText("");
     setIsSending(true);
-    spendCoin();
+    spendCoins(5);
     try {
       const reply = await sendMessage(id ?? "", text);
       setIsSending(false);
@@ -704,12 +704,12 @@ export default function ChatScreen() {
 
       setLastVoiceTranscript(transcript);
 
-      if (coinsRef.current <= 0) {
+      if (coinsRef.current < 5) {
         setShowNoCoins(true);
         setIsVoiceMode(false);
         return;
       }
-      spendCoin();
+      spendCoins(5);
       setIsSending(true);
       const reply = await sendMessage(id ?? "", transcript);
       setIsSending(false);

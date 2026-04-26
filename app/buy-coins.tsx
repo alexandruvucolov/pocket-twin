@@ -20,7 +20,7 @@ const { width } = Dimensions.get("window");
 export default function BuyCoinsScreen() {
   const router = useRouter();
   const { coins, addCoins } = useAvatars();
-  const [selectedPack, setSelectedPack] = useState<string | null>("coins_50");
+  const [selectedPack, setSelectedPack] = useState<string | null>("coins_200");
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
 

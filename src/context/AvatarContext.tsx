@@ -34,6 +34,7 @@ interface AvatarContextType {
   addMessage: (avatarId: string, msg: ChatMessage) => void;
   addCoins: (amount: number) => void;
   spendCoin: () => boolean;
+  spendCoins: (amount: number) => boolean;
   sendMessage: (avatarId: string, text: string) => Promise<string>;
   updateAvatarVideoUrl: (avatarId: string, videoUrl: string) => void;
 }
@@ -304,6 +305,23 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     return true;
   };
 
+  const spendCoins = (amount: number): boolean => {
+    if (coins < amount) return false;
+
+    setCoins((prev) => prev - amount);
+
+    if (firebaseReady && db && user && userDocRef) {
+      void updateDoc(userDocRef, {
+        coins: increment(-amount),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {
+        setCoins((prev) => prev + amount);
+      });
+    }
+
+    return true;
+  };
+
   const updateAvatarVideoUrl = (avatarId: string, videoUrl: string) => {
     setAvatars((prev) =>
       prev.map((a) => (a.id === avatarId ? { ...a, videoUrl } : a)),
@@ -359,6 +377,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
         addMessage,
         addCoins,
         spendCoin,
+        spendCoins,
         sendMessage,
         updateAvatarVideoUrl,
       }}

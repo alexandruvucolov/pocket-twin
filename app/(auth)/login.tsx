@@ -21,7 +21,7 @@ const { width, height } = Dimensions.get("window");
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn, signUp, isLoading, user } = useAuth();
+  const { signIn, signUp, signInWithGoogle, isLoading, user } = useAuth();
 
   // If user is already authenticated (e.g. session restored after reload), go to tabs.
   React.useEffect(() => {
@@ -36,6 +36,22 @@ export default function LoginScreen() {
   const [name, setName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const [googleLoading, setGoogleLoading] = useState(false);
+
+  const handleGoogleSignIn = async () => {
+    try {
+      setGoogleLoading(true);
+      await signInWithGoogle();
+      router.replace("/(tabs)");
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      const message = (err as { message?: string })?.message ?? String(err);
+      Alert.alert("Google Sign-In Failed", `${code ?? "error"}: ${message}`);
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -208,18 +224,21 @@ export default function LoginScreen() {
             <View style={styles.dividerLine} />
           </View>
 
-          {/* Google placeholder */}
+          {/* Google */}
           <TouchableOpacity
-            style={styles.googleButton}
-            onPress={() =>
-              Alert.alert(
-                "Coming Soon",
-                "Google Sign-In will be enabled with Firebase configuration.",
-              )
-            }
+            style={[styles.googleButton, googleLoading && styles.buttonDisabled]}
+            onPress={handleGoogleSignIn}
+            disabled={googleLoading || isLoading}
+            activeOpacity={0.85}
           >
-            <Text style={styles.googleIcon}>G</Text>
-            <Text style={styles.googleText}>Continue with Google</Text>
+            {googleLoading ? (
+              <ActivityIndicator color="#333" />
+            ) : (
+              <>
+                <Text style={styles.googleIcon}>G</Text>
+                <Text style={styles.googleText}>Continue with Google</Text>
+              </>
+            )}
           </TouchableOpacity>
         </View>
 
