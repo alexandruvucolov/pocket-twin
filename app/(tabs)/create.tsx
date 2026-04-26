@@ -28,7 +28,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "@/constants/colors";
 import {
   runCreateJob,
-  warmupCreateWorker,
   CreateJobStatus,
   isCreateConfigured,
 } from "@/lib/create-serverless";
@@ -77,8 +76,8 @@ export default function CreateScreen() {
   const [videoSource, setVideoSource] = useState<VideoSource>("text");
   const [prompt, setPrompt] = useState("");
   const [selectedDuration, setSelectedDuration] = useState<
-    "6s" | "10s"
-  >("6s");
+    "5s" | "10s" | "15s"
+  >("5s");
   const [selectedVideoFormat, setSelectedVideoFormat] = useState<VideoFormat>("portrait");
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<{
@@ -266,7 +265,7 @@ export default function CreateScreen() {
                 task: "image_to_video" as const,
                 prompt: enhanced,
                 image: referenceImage?.base64 ?? "",
-                duration: selectedDuration,
+                duration: (selectedDuration === "15s" ? "5s" : selectedDuration) as "5s" | "10s",
                 width: VIDEO_FORMAT_SIZES[selectedVideoFormat].width,
                 height: VIDEO_FORMAT_SIZES[selectedVideoFormat].height,
                 num_inference_steps: 20,
@@ -392,7 +391,11 @@ export default function CreateScreen() {
                 styles.subToggleBtn,
                 videoSource === "image" && styles.subToggleBtnActive,
               ]}
-              onPress={() => setVideoSource("image")}
+              onPress={() => {
+                setVideoSource("image");
+                // 15s is PixVerse T2V only — reset to 5s for Kling I2V
+                if (selectedDuration === "15s") setSelectedDuration("5s");
+              }}
             >
               <Text
                 style={[
@@ -516,7 +519,10 @@ export default function CreateScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Duration</Text>
             <View style={styles.chipRow}>
-              {(["6s", "10s"] as const).map((d) => (
+              {(videoSource === "text"
+                ? (["5s", "10s", "15s"] as const)
+                : (["5s", "10s"] as const)
+              ).map((d) => (
                 <TouchableOpacity
                   key={d}
                   style={[

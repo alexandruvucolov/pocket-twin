@@ -1,16 +1,14 @@
 /**
  * create-serverless.ts
  *
- * Client for the Pocket Twin WAN 2.1 + FLUX Modal serverless endpoint.
- * Handles: text_to_image | text_to_video | image_to_video
+ * Client for Pocket Twin AI generation endpoints.
+ * Handles: text_to_image | image_to_image | text_to_video | image_to_video
  *
- * Required env var:
- *   EXPO_PUBLIC_MODAL_CREATE_URL   ← the web_endpoint URL from `modal deploy`
- *                                     e.g. https://pocket-twin-create--pocket-twin-create.modal.run
+ * All four tasks are routed to fal.ai (EXPO_PUBLIC_FAL_API_KEY required).
+ * Modal is only used for lipsync — see modal-lipsync.ts.
  */
-
-// Two separate Modal endpoints — cheap A10G for images, H100 for video
-const REQUEST_TIMEOUT_MS = 900_000; // 15 min (WAN 30s video can be slow)
+import { isFalConfigured, runFalImageToVideo, runFalTextToVideo } from "./fal-video";
+import { runFalImageEdit, runFalTextToImage } from "./fal-image-edit";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -50,7 +48,7 @@ export interface TextToVideoInput {
   task: "text_to_video";
   prompt: string;
   negative_prompt?: string;
-  duration: "6s" | "10s";
+  duration: "5s" | "10s" | "15s";
   width?: number;
   height?: number;
   num_inference_steps?: number;
@@ -62,7 +60,7 @@ export interface ImageToVideoInput {
   prompt: string;
   negative_prompt?: string;
   image: string; // base64-encoded image
-  duration: "6s" | "10s";
+  duration: "5s" | "10s";
   width?: number;
   height?: number;
   num_inference_steps?: number;
@@ -77,46 +75,12 @@ export type CreateInput =
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function imageUrl(): string {
-  const v = (process.env.EXPO_PUBLIC_MODAL_IMAGE_URL ?? "").trim();
-  if (!v) throw new Error("EXPO_PUBLIC_MODAL_IMAGE_URL is not set.");
-  return v;
-}
-
-function videoUrl(): string {
-  const v = (process.env.EXPO_PUBLIC_MODAL_VIDEO_URL ?? "").trim();
-  if (!v) throw new Error("EXPO_PUBLIC_MODAL_VIDEO_URL is not set.");
-  return v;
-}
-
-function endpointUrl(task: CreateTask): string {
-  return task === "text_to_image" || task === "image_to_image"
-    ? imageUrl()
-    : videoUrl();
-}
-
 export function isCreateConfigured(): boolean {
-  return (
-    Boolean((process.env.EXPO_PUBLIC_MODAL_IMAGE_URL ?? "").trim()) &&
-    Boolean((process.env.EXPO_PUBLIC_MODAL_VIDEO_URL ?? "").trim())
-  );
+  return isFalConfigured();
 }
 
-// ─── Warmup ──────────────────────────────────────────────────────────────────
-
-export async function warmupCreateWorker(): Promise<void> {
-  if (!isCreateConfigured()) return;
-  try {
-    // Only warm the image endpoint (A10G) — video (H100) is too expensive to pre-warm
-    await fetch(imageUrl(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task: "warmup" }),
-    });
-  } catch (_) {
-    // best-effort
-  }
-}
+// No-op warmup — fal.ai is serverless and doesn't need pre-warming
+export async function warmupCreateWorker(): Promise<void> {}
 
 // ─── Main: run job with progress callback ────────────────────────────────────
 
@@ -131,70 +95,89 @@ export async function runCreateJob(
 ): Promise<string> {
   onStatus({ phase: "queued", progress: 5 });
 
-  // Simulate progress while Modal processes the request
-  let fakeProgress = 5;
-  const progressTimer = setInterval(() => {
-    fakeProgress = Math.min(fakeProgress + 2, 90);
-    onStatus({ phase: "running", progress: fakeProgress });
-  }, 3000);
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    const combinedSignal = signal
-      ? combineSignals(signal, controller.signal)
-      : controller.signal;
-
-    onStatus({ phase: "running", progress: 10 });
-
-    const res = await fetch(endpointUrl(input.task), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-      signal: combinedSignal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Modal endpoint error ${res.status}: ${text}`);
+  // ── text_to_image → fal.ai GPT Image 2 (when API key is configured) ────────
+  if (input.task === "text_to_image" && isFalConfigured()) {
+    const t2iInput = input as TextToImageInput;
+    try {
+      const url = await runFalTextToImage(
+        { prompt: t2iInput.prompt },
+        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        signal,
+      );
+      onStatus({ phase: "done", progress: 100, url });
+      return url;
+    } catch (e: any) {
+      onStatus({ phase: "error", error: e.message });
+      throw e;
     }
-
-    const data = await res.json();
-
-    if (data.error) {
-      onStatus({ phase: "error", error: data.error });
-      throw new Error(data.error);
-    }
-
-    // Images are returned as base64 to avoid Firebase Storage costs
-    if (data.base64) {
-      const dataUri = `data:image/png;base64,${data.base64}`;
-      onStatus({ phase: "done", progress: 100, url: dataUri });
-      return dataUri;
-    }
-
-    const url: string = data.url;
-    if (!url) throw new Error("Modal returned no output URL");
-
-    onStatus({ phase: "done", progress: 100, url });
-    return url;
-  } finally {
-    clearInterval(progressTimer);
   }
-}
 
-// ─── Utility ─────────────────────────────────────────────────────────────────
-
-function combineSignals(...signals: AbortSignal[]): AbortSignal {
-  const controller = new AbortController();
-  for (const sig of signals) {
-    if (sig.aborted) {
-      controller.abort();
-      break;
+  // ── image_to_image → fal.ai GPT Image 2 Edit (when API key is configured) ─
+  if (input.task === "image_to_image" && isFalConfigured()) {
+    const i2iInput = input as ImageToImageInput;
+    try {
+      const url = await runFalImageEdit(
+        {
+          imageBase64: i2iInput.image,
+          prompt: i2iInput.prompt,
+        },
+        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        signal,
+      );
+      onStatus({ phase: "done", progress: 100, url });
+      return url;
+    } catch (e: any) {
+      onStatus({ phase: "error", error: e.message });
+      throw e;
     }
-    sig.addEventListener("abort", () => controller.abort(), { once: true });
   }
-  return controller.signal;
+
+  // ── text_to_video → fal.ai PixVerse C1 ─────────────────────────────────────
+  if (input.task === "text_to_video" && isFalConfigured()) {
+    const t2vInput = input as TextToVideoInput;
+    try {
+      const url = await runFalTextToVideo(
+        {
+          prompt: t2vInput.prompt,
+          duration: t2vInput.duration,
+          width: t2vInput.width,
+          height: t2vInput.height,
+        },
+        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        signal,
+      );
+      onStatus({ phase: "done", progress: 100, url });
+      return url;
+    } catch (e: any) {
+      onStatus({ phase: "error", error: e.message });
+      throw e;
+    }
+  }
+
+  // ── image_to_video → fal.ai (when API key is configured) ─────────────────
+  if (input.task === "image_to_video" && isFalConfigured()) {
+    const i2vInput = input as ImageToVideoInput;
+    try {
+      const url = await runFalImageToVideo(
+        {
+          imageBase64: i2vInput.image,
+          prompt: i2vInput.prompt,
+          duration: i2vInput.duration,
+          width: i2vInput.width,
+          height: i2vInput.height,
+        },
+        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        signal,
+      );
+      onStatus({ phase: "done", progress: 100, url });
+      return url;
+    } catch (e: any) {
+      onStatus({ phase: "error", error: e.message });
+      throw e;
+    }
+  }
+
+  // All tasks are handled by fal.ai above — this point is unreachable when
+  // fal.ai is configured. Throw a clear error if somehow reached.
+  throw new Error(`No handler for task "${input.task}" — set EXPO_PUBLIC_FAL_API_KEY.`);
 }
