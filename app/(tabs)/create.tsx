@@ -35,7 +35,15 @@ import { enhancePrompt } from "@/lib/openai";
 
 const { width } = Dimensions.get("window");
 
-function VideoPlayerResult({ uri, style, contentFit = "cover" }: { uri: string; style: any; contentFit?: "cover" | "contain" | "fill" }) {
+function VideoPlayerResult({
+  uri,
+  style,
+  contentFit = "cover",
+}: {
+  uri: string;
+  style: any;
+  contentFit?: "cover" | "contain" | "fill";
+}) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = true;
     p.play();
@@ -57,17 +65,25 @@ type VideoFormat = "landscape" | "portrait" | "square";
 // FLUX-specific trigger words for each style chip — appended after GPT enhancement
 // so GPT cannot dilute or overwrite the style.
 const STYLE_PROMPT_SUFFIX: Record<string, string> = {
-  "Photorealistic": "photorealistic, hyperrealistic, 8K UHD, DSLR photograph, sharp focus, natural skin texture, high detail",
-  "Anime": "anime style, cel shading, manga illustration, vibrant saturated colors, Studio Ghibli aesthetic, detailed line art, 2D animation",
-  "Cinematic": "cinematic photography, movie still, dramatic lighting, anamorphic lens bokeh, film grain, widescreen composition, Hollywood color grade",
-  "Oil Painting": "oil painting on canvas, impasto technique, visible brushstrokes, textured canvas, classical fine art, rich deep colors, old masters style",
-  "3D Render": "3D CGI render, Blender octane render, ray tracing, subsurface scattering, physically based rendering, ultra-detailed 3D, ambient occlusion",
+  Photorealistic:
+    "photorealistic, hyperrealistic, 8K UHD, DSLR photograph, sharp focus, natural skin texture, high detail",
+  Anime:
+    "anime style, cel shading, manga illustration, vibrant saturated colors, Studio Ghibli aesthetic, detailed line art, 2D animation",
+  Cinematic:
+    "cinematic photography, movie still, dramatic lighting, anamorphic lens bokeh, film grain, widescreen composition, Hollywood color grade",
+  "Oil Painting":
+    "oil painting on canvas, impasto technique, visible brushstrokes, textured canvas, classical fine art, rich deep colors, old masters style",
+  "3D Render":
+    "3D CGI render, Blender octane render, ray tracing, subsurface scattering, physically based rendering, ultra-detailed 3D, ambient occlusion",
 };
 
-const VIDEO_FORMAT_SIZES: Record<VideoFormat, { width: number; height: number; label: string }> = {
-  portrait:  { width: 480, height: 832, label: "Portrait" },
+const VIDEO_FORMAT_SIZES: Record<
+  VideoFormat,
+  { width: number; height: number; label: string }
+> = {
+  portrait: { width: 480, height: 832, label: "Portrait" },
   landscape: { width: 832, height: 480, label: "Landscape" },
-  square:    { width: 624, height: 624, label: "Square" },
+  square: { width: 624, height: 624, label: "Square" },
 };
 
 export default function CreateScreen() {
@@ -78,7 +94,8 @@ export default function CreateScreen() {
   const [selectedDuration, setSelectedDuration] = useState<
     "5s" | "10s" | "15s"
   >("5s");
-  const [selectedVideoFormat, setSelectedVideoFormat] = useState<VideoFormat>("portrait");
+  const [selectedVideoFormat, setSelectedVideoFormat] =
+    useState<VideoFormat>("portrait");
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<{
     uri: string;
@@ -154,10 +171,15 @@ export default function CreateScreen() {
       if (mode === "video") {
         let thumbnail: string | undefined;
         try {
-          const t = await VideoThumbnails.getThumbnailAsync(result, { time: 0 });
+          const t = await VideoThumbnails.getThumbnailAsync(result, {
+            time: 0,
+          });
           thumbnail = t.uri;
         } catch (_) {}
-        setSavedItems((prev) => [{ uri: result, type: "video", thumbnail }, ...prev]);
+        setSavedItems((prev) => [
+          { uri: result, type: "video", thumbnail },
+          ...prev,
+        ]);
       } else {
         setSavedItems((prev) => [{ uri: result, type: "image" }, ...prev]);
       }
@@ -182,7 +204,10 @@ export default function CreateScreen() {
       let localUri: string;
       if (result.startsWith("data:image/")) {
         const b64 = result.replace(/^data:image\/\w+;base64,/, "");
-        const cacheFile = new File(Paths.cache, `pocket-twin-share-${Date.now()}.png`);
+        const cacheFile = new File(
+          Paths.cache,
+          `pocket-twin-share-${Date.now()}.png`,
+        );
         await cacheFile.write(b64, { encoding: "base64" });
         localUri = cacheFile.uri;
       } else {
@@ -231,7 +256,11 @@ export default function CreateScreen() {
       }
 
       // Append FLUX style trigger words after GPT enhancement so they cannot be overwritten
-      if (selectedStyle && mode === "image" && STYLE_PROMPT_SUFFIX[selectedStyle]) {
+      if (
+        selectedStyle &&
+        mode === "image" &&
+        STYLE_PROMPT_SUFFIX[selectedStyle]
+      ) {
         enhanced = `${enhanced}, ${STYLE_PROMPT_SUFFIX[selectedStyle]}`;
       }
 
@@ -265,7 +294,10 @@ export default function CreateScreen() {
                 task: "image_to_video" as const,
                 prompt: enhanced,
                 image: referenceImage?.base64 ?? "",
-                duration: (selectedDuration === "15s" ? "5s" : selectedDuration) as "5s" | "10s",
+                imageUri: referenceImage?.uri,
+                duration: (selectedDuration === "15s"
+                  ? "5s"
+                  : selectedDuration) as "5s" | "10s",
                 width: VIDEO_FORMAT_SIZES[selectedVideoFormat].width,
                 height: VIDEO_FORMAT_SIZES[selectedVideoFormat].height,
                 num_inference_steps: 20,
@@ -646,7 +678,9 @@ export default function CreateScreen() {
               <View style={styles.savedBanner}>
                 <Ionicons name="checkmark-circle" size={20} color="#4ADE80" />
                 <Text style={styles.savedBannerText}>
-                  {mode === "video" ? "Video saved to gallery" : "Picture saved to gallery"}
+                  {mode === "video"
+                    ? "Video saved to gallery"
+                    : "Picture saved to gallery"}
                 </Text>
               </View>
             )}
@@ -747,16 +781,26 @@ export default function CreateScreen() {
               try {
                 let localUri: string;
                 if (lightboxItem.uri.startsWith("data:image/")) {
-                  const b64 = lightboxItem.uri.replace(/^data:image\/\w+;base64,/, "");
-                  const cacheFile = new File(Paths.cache, `pocket-twin-share-${Date.now()}.png`);
+                  const b64 = lightboxItem.uri.replace(
+                    /^data:image\/\w+;base64,/,
+                    "",
+                  );
+                  const cacheFile = new File(
+                    Paths.cache,
+                    `pocket-twin-share-${Date.now()}.png`,
+                  );
                   await cacheFile.write(b64, { encoding: "base64" });
                   localUri = cacheFile.uri;
                 } else {
-                  const downloaded = await File.downloadFileAsync(lightboxItem.uri, Paths.cache);
+                  const downloaded = await File.downloadFileAsync(
+                    lightboxItem.uri,
+                    Paths.cache,
+                  );
                   localUri = downloaded.uri;
                 }
                 await Sharing.shareAsync(localUri, {
-                  mimeType: lightboxItem.type === "video" ? "video/mp4" : "image/png",
+                  mimeType:
+                    lightboxItem.type === "video" ? "video/mp4" : "image/png",
                   dialogTitle: "Share your creation",
                 });
               } catch (e: any) {
@@ -776,9 +820,15 @@ export default function CreateScreen() {
                 try {
                   let b64: string;
                   if (lightboxItem.uri.startsWith("data:image/")) {
-                    b64 = lightboxItem.uri.replace(/^data:image\/\w+;base64,/, "");
+                    b64 = lightboxItem.uri.replace(
+                      /^data:image\/\w+;base64,/,
+                      "",
+                    );
                   } else {
-                    const downloaded = await File.downloadFileAsync(lightboxItem.uri, Paths.cache);
+                    const downloaded = await File.downloadFileAsync(
+                      lightboxItem.uri,
+                      Paths.cache,
+                    );
                     const bytes = await new File(downloaded.uri).bytes();
                     b64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
                   }

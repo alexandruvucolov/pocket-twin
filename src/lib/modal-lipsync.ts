@@ -83,7 +83,8 @@ export async function submitLatentSyncJob(
 }
 
 async function _runJob(params: LatentSyncJobInput): Promise<string> {
-  if (!MODAL_LIPSYNC_URL) throw new Error("EXPO_PUBLIC_MODAL_LIPSYNC_URL is not set.");
+  if (!MODAL_LIPSYNC_URL)
+    throw new Error("EXPO_PUBLIC_MODAL_LIPSYNC_URL is not set.");
 
   const controller = new AbortController();
   // 5-minute hard timeout — LatentSync on A10G typically finishes in 15-60s

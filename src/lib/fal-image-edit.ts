@@ -8,7 +8,8 @@
  *   EXPO_PUBLIC_FAL_API_KEY  ← your fal.ai API key
  */
 
-const FAL_STORAGE_INITIATE = "https://rest.alpha.fal.ai/storage/upload/initiate";
+const FAL_STORAGE_INITIATE =
+  "https://rest.alpha.fal.ai/storage/upload/initiate";
 const FAL_QUEUE_BASE = "https://queue.fal.run";
 const FAL_EDIT_MODEL = "openai/gpt-image-2/edit";
 
@@ -48,18 +49,17 @@ function base64ToBytes(b64: string): Uint8Array {
 async function compressImage(base64: string): Promise<string> {
   try {
     const FileSystem = await import("expo-file-system");
-    const { manipulateAsync, SaveFormat } = await import("expo-image-manipulator");
+    const { manipulateAsync, SaveFormat } =
+      await import("expo-image-manipulator");
 
     const tmpUri = `${FileSystem.cacheDirectory}fal_edit_tmp.jpg`;
-    await FileSystem.writeAsStringAsync(tmpUri, base64, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    await FileSystem.writeAsStringAsync(tmpUri, base64, { encoding: "base64" });
 
-    const result = await manipulateAsync(
-      tmpUri,
-      [{ resize: { width: 768 } }],
-      { compress: 0.85, format: SaveFormat.JPEG, base64: true },
-    );
+    const result = await manipulateAsync(tmpUri, [{ resize: { width: 768 } }], {
+      compress: 0.85,
+      format: SaveFormat.JPEG,
+      base64: true,
+    });
 
     FileSystem.deleteAsync(tmpUri, { idempotent: true }).catch(() => {});
     return result.base64 ?? base64;
@@ -71,7 +71,10 @@ async function compressImage(base64: string): Promise<string> {
 /**
  * Upload a base64 JPEG to fal.ai storage and return a public URL.
  */
-async function uploadToFal(imageBase64: string, signal?: AbortSignal): Promise<string> {
+async function uploadToFal(
+  imageBase64: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const apiKey = falApiKey();
 
   const initiateRes = await fetch(FAL_STORAGE_INITIATE, {
@@ -80,12 +83,17 @@ async function uploadToFal(imageBase64: string, signal?: AbortSignal): Promise<s
       Authorization: `Key ${apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ content_type: "image/jpeg", file_name: "image.jpg" }),
+    body: JSON.stringify({
+      content_type: "image/jpeg",
+      file_name: "image.jpg",
+    }),
     signal,
   });
   if (!initiateRes.ok) {
     const text = await initiateRes.text();
-    throw new Error(`fal.ai storage initiate failed ${initiateRes.status}: ${text}`);
+    throw new Error(
+      `fal.ai storage initiate failed ${initiateRes.status}: ${text}`,
+    );
   }
   const { upload_url, file_url } = await initiateRes.json();
 
@@ -154,7 +162,9 @@ export async function runFalImageEdit(
   const submitData = await submitRes.json();
   const { status_url, response_url } = submitData;
   if (!status_url || !response_url) {
-    throw new Error(`fal.ai submit missing URLs: ${JSON.stringify(submitData)}`);
+    throw new Error(
+      `fal.ai submit missing URLs: ${JSON.stringify(submitData)}`,
+    );
   }
   onProgress(20);
 
@@ -180,7 +190,9 @@ export async function runFalImageEdit(
       break;
     }
     if (status === "FAILED") {
-      throw new Error(`fal.ai image edit failed: ${JSON.stringify(statusData)}`);
+      throw new Error(
+        `fal.ai image edit failed: ${JSON.stringify(statusData)}`,
+      );
     }
 
     pollProgress = Math.min(pollProgress + 5, 90);
@@ -204,7 +216,10 @@ export async function runFalImageEdit(
     result?.image?.url ??
     result?.output?.images?.[0]?.url;
 
-  if (!url) throw new Error(`fal.ai image edit: no URL in result: ${JSON.stringify(result)}`);
+  if (!url)
+    throw new Error(
+      `fal.ai image edit: no URL in result: ${JSON.stringify(result)}`,
+    );
 
   onProgress(100);
   return url;
@@ -255,7 +270,9 @@ export async function runFalTextToImage(
   const submitData = await submitRes.json();
   const { status_url, response_url } = submitData;
   if (!status_url || !response_url) {
-    throw new Error(`fal.ai submit missing URLs: ${JSON.stringify(submitData)}`);
+    throw new Error(
+      `fal.ai submit missing URLs: ${JSON.stringify(submitData)}`,
+    );
   }
   onProgress(20);
 
@@ -280,7 +297,9 @@ export async function runFalTextToImage(
       break;
     }
     if (status === "FAILED") {
-      throw new Error(`fal.ai text-to-image failed: ${JSON.stringify(statusData)}`);
+      throw new Error(
+        `fal.ai text-to-image failed: ${JSON.stringify(statusData)}`,
+      );
     }
 
     pollProgress = Math.min(pollProgress + 5, 90);
@@ -303,7 +322,10 @@ export async function runFalTextToImage(
     result?.image?.url ??
     result?.output?.images?.[0]?.url;
 
-  if (!url) throw new Error(`fal.ai text-to-image: no URL in result: ${JSON.stringify(result)}`);
+  if (!url)
+    throw new Error(
+      `fal.ai text-to-image: no URL in result: ${JSON.stringify(result)}`,
+    );
 
   onProgress(100);
   return url;

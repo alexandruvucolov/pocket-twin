@@ -1068,7 +1068,11 @@ export default function ChatScreen() {
           <>
             <Image
               source={{ uri: avatar.imageUri }}
-              style={[styles.avatarPanelImage, styles.avatarPanelBlurred, StyleSheet.absoluteFill]}
+              style={[
+                styles.avatarPanelImage,
+                styles.avatarPanelBlurred,
+                StyleSheet.absoluteFill,
+              ]}
               blurRadius={18}
             />
             <View style={styles.generatingOverlay}>

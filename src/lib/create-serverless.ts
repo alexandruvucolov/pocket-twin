@@ -7,12 +7,20 @@
  * All four tasks are routed to fal.ai (EXPO_PUBLIC_FAL_API_KEY required).
  * Modal is only used for lipsync — see modal-lipsync.ts.
  */
-import { isFalConfigured, runFalImageToVideo, runFalTextToVideo } from "./fal-video";
+import {
+  isFalConfigured,
+  runFalImageToVideo,
+  runFalTextToVideo,
+} from "./fal-video";
 import { runFalImageEdit, runFalTextToImage } from "./fal-image-edit";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type CreateTask = "text_to_image" | "image_to_image" | "text_to_video" | "image_to_video";
+export type CreateTask =
+  | "text_to_image"
+  | "image_to_image"
+  | "text_to_video"
+  | "image_to_video";
 
 export interface CreateJobStatus {
   phase: "queued" | "running" | "done" | "error";
@@ -60,6 +68,7 @@ export interface ImageToVideoInput {
   prompt: string;
   negative_prompt?: string;
   image: string; // base64-encoded image
+  imageUri?: string; // on-device file URI from picker (preferred for manipulation)
   duration: "5s" | "10s";
   width?: number;
   height?: number;
@@ -101,7 +110,8 @@ export async function runCreateJob(
     try {
       const url = await runFalTextToImage(
         { prompt: t2iInput.prompt },
-        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        (pct) =>
+          onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
         signal,
       );
       onStatus({ phase: "done", progress: 100, url });
@@ -121,7 +131,8 @@ export async function runCreateJob(
           imageBase64: i2iInput.image,
           prompt: i2iInput.prompt,
         },
-        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        (pct) =>
+          onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
         signal,
       );
       onStatus({ phase: "done", progress: 100, url });
@@ -143,7 +154,8 @@ export async function runCreateJob(
           width: t2vInput.width,
           height: t2vInput.height,
         },
-        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        (pct) =>
+          onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
         signal,
       );
       onStatus({ phase: "done", progress: 100, url });
@@ -161,12 +173,14 @@ export async function runCreateJob(
       const url = await runFalImageToVideo(
         {
           imageBase64: i2vInput.image,
+          imageUri: i2vInput.imageUri,
           prompt: i2vInput.prompt,
           duration: i2vInput.duration,
           width: i2vInput.width,
           height: i2vInput.height,
         },
-        (pct) => onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
+        (pct) =>
+          onStatus({ phase: pct < 100 ? "running" : "done", progress: pct }),
         signal,
       );
       onStatus({ phase: "done", progress: 100, url });
@@ -179,5 +193,7 @@ export async function runCreateJob(
 
   // All tasks are handled by fal.ai above — this point is unreachable when
   // fal.ai is configured. Throw a clear error if somehow reached.
-  throw new Error(`No handler for task "${input.task}" — set EXPO_PUBLIC_FAL_API_KEY.`);
+  throw new Error(
+    `No handler for task "${input.task}" — set EXPO_PUBLIC_FAL_API_KEY.`,
+  );
 }

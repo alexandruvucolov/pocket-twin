@@ -11,7 +11,8 @@
  *   EXPO_PUBLIC_FAL_API_KEY  ← your fal.ai API key
  */
 
-const FAL_STORAGE_INITIATE = "https://rest.alpha.fal.ai/storage/upload/initiate";
+const FAL_STORAGE_INITIATE =
+  "https://rest.alpha.fal.ai/storage/upload/initiate";
 const FAL_QUEUE_BASE = "https://queue.fal.run";
 
 const POLL_INTERVAL_MS = 2_500;
@@ -29,6 +30,8 @@ export const FAL_DEFAULT_MODEL: FalI2VModel =
 export interface FalI2VInput {
   /** Pure base64 string (no data URI prefix). */
   imageBase64: string;
+  /** On-device file URI from the image picker — used by manipulateAsync directly. */
+  imageUri?: string;
   prompt: string;
   duration?: "5s" | "10s";
   width?: number;
@@ -59,33 +62,74 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * Resize + compress a base64 image so it's at most MAX_IMAGE_DIMENSION on its
- * longest side at JPEG quality 0.85. Returns the compressed base64 string.
- * Falls back to the original if expo-image-manipulator is unavailable.
+ * Crop + compress an image to the target aspect ratio for Kling I2V.
+ * Accepts a file URI (preferred — no temp file needed) or falls back to base64.
+ * Kling has no aspect_ratio param — output orientation = input image dimensions.
+ *
+ * Pass 1: resize to MAX_IMAGE_DIMENSION on the appropriate axis.
+ *   Portrait (9:16) → resize by height so a landscape source is wide enough to crop.
+ * Pass 2: center-crop to the exact target ratio, then compress to JPEG.
  */
-async function compressImage(base64: string): Promise<string> {
+async function compressImage(
+  imageUri: string,
+  targetAspectRatio?: "9:16" | "16:9" | "1:1",
+): Promise<string> {
   try {
-    const { manipulateAsync, SaveFormat } = await import("expo-image-manipulator");
-    const FileSystem = await import("expo-file-system");
+    const { manipulateAsync, SaveFormat } =
+      await import("expo-image-manipulator");
 
-    // manipulateAsync requires a real file URI — data: URIs cause a hard crash
-    const tmpUri = `${FileSystem.cacheDirectory}fal_upload_tmp.jpg`;
-    await FileSystem.writeAsStringAsync(tmpUri, base64, {
-      encoding: FileSystem.EncodingType.Base64,
+    // Pass 1: resize — portrait target needs height-based resize
+    const resizeByHeight = targetAspectRatio === "9:16";
+    const resizeAction = resizeByHeight
+      ? { resize: { height: MAX_IMAGE_DIMENSION } }
+      : { resize: { width: MAX_IMAGE_DIMENSION } };
+
+    const step1 = await manipulateAsync(imageUri, [resizeAction], {
+      format: SaveFormat.JPEG,
+    });
+    const s1W = step1.width;
+    const s1H = step1.height;
+
+    // Pass 2: center-crop to target ratio (if needed), then compress
+    let cropActions: Parameters<typeof manipulateAsync>[1] = [];
+    if (targetAspectRatio) {
+      const [arW, arH] = targetAspectRatio.split(":").map(Number);
+      const targetRatio = arW / arH;
+      const s1Ratio = s1W / s1H;
+      if (Math.abs(s1Ratio - targetRatio) > 0.02) {
+        let cropW: number, cropH: number;
+        if (s1Ratio > targetRatio) {
+          // too wide → crop left/right
+          cropH = s1H;
+          cropW = Math.round(s1H * targetRatio);
+        } else {
+          // too tall → crop top/bottom
+          cropW = s1W;
+          cropH = Math.round(s1W / targetRatio);
+        }
+        cropActions = [
+          {
+            crop: {
+              originX: Math.round((s1W - cropW) / 2),
+              originY: Math.round((s1H - cropH) / 2),
+              width: cropW,
+              height: cropH,
+            },
+          },
+        ];
+      }
+    }
+
+    const result = await manipulateAsync(step1.uri, cropActions, {
+      compress: 0.85,
+      format: SaveFormat.JPEG,
+      base64: true,
     });
 
-    const result = await manipulateAsync(
-      tmpUri,
-      [{ resize: { width: MAX_IMAGE_DIMENSION } }],
-      { compress: 0.85, format: SaveFormat.JPEG, base64: true },
-    );
-
-    // Clean up temp file (best-effort)
-    FileSystem.deleteAsync(tmpUri, { idempotent: true }).catch(() => {});
-
-    return result.base64 ?? base64;
-  } catch {
-    return base64; // fallback — upload original
+    return result.base64 ?? "";
+  } catch (e) {
+    console.error("[compressImage] failed:", e);
+    return ""; // caller falls back to raw base64
   }
 }
 
@@ -113,7 +157,9 @@ async function uploadImageToFal(
   });
   if (!initiateRes.ok) {
     const text = await initiateRes.text();
-    throw new Error(`fal.ai storage initiate failed ${initiateRes.status}: ${text}`);
+    throw new Error(
+      `fal.ai storage initiate failed ${initiateRes.status}: ${text}`,
+    );
   }
   const { upload_url, file_url } = await initiateRes.json();
 
@@ -147,27 +193,40 @@ export async function runFalImageToVideo(
   const apiKey = falApiKey();
   const model = input.model ?? FAL_DEFAULT_MODEL;
 
-  // 1. Compress + resize image before upload (24 MB → ~300 KB)
+  // 1. Crop + compress image to target aspect ratio before upload
+  // Kling I2V derives output orientation from the input image — must crop first.
   onProgress(3);
-  const compressedBase64 = await compressImage(input.imageBase64);
+  const aspectRatio = (() => {
+    const w = input.width ?? 576;
+    const h = input.height ?? 1024;
+    return w > h
+      ? ("16:9" as const)
+      : w === h
+        ? ("1:1" as const)
+        : ("9:16" as const);
+  })();
+  // Use the on-device URI from the picker when available — avoids writing a temp file
+  const sourceUri = input.imageUri;
+  const compressedBase64 = sourceUri
+    ? (await compressImage(sourceUri, aspectRatio)) || input.imageBase64
+    : input.imageBase64;
 
   // 2. Upload image to fal storage
   onProgress(5);
-  const imageUrl = await uploadImageToFal(compressedBase64, "image/jpeg", signal);
+  const imageUrl = await uploadImageToFal(
+    compressedBase64,
+    "image/jpeg",
+    signal,
+  );
   onProgress(15);
 
-  // 2. Determine aspect ratio from width/height
-  const w = input.width ?? 576;
-  const h = input.height ?? 1024;
-  const aspectRatio = w > h ? "16:9" : w === h ? "1:1" : "9:16";
   const duration = input.duration === "10s" ? "10" : "5"; // Kling uses numeric strings
 
-  // 3. Build payload
+  // 3. Build payload — Kling I2V has no aspect_ratio param; output ratio = input image ratio
   const payload: Record<string, unknown> = {
     image_url: imageUrl,
     prompt: input.prompt,
     duration,
-    aspect_ratio: aspectRatio,
   };
 
   // 4. Submit to fal queue
@@ -187,13 +246,18 @@ export async function runFalImageToVideo(
   const submitData = await submitRes.json();
   const { request_id, status_url, response_url } = submitData;
   if (!request_id) {
-    throw new Error(`fal.ai submit returned no request_id: ${JSON.stringify(submitData)}`);
+    throw new Error(
+      `fal.ai submit returned no request_id: ${JSON.stringify(submitData)}`,
+    );
   }
   onProgress(20);
 
   // 5. Poll for completion using status_url from response (avoids URL construction issues)
-  const pollUrl = status_url ?? `${FAL_QUEUE_BASE}/${model}/requests/${request_id}/status`;
-  const resultUrl = response_url ?? `${FAL_QUEUE_BASE}/${model}/requests/${request_id}/response`;
+  const pollUrl =
+    status_url ?? `${FAL_QUEUE_BASE}/${model}/requests/${request_id}/status`;
+  const resultUrl =
+    response_url ??
+    `${FAL_QUEUE_BASE}/${model}/requests/${request_id}/response`;
 
   const startMs = Date.now();
   let consecutiveErrors = 0;
@@ -215,7 +279,9 @@ export async function runFalImageToVideo(
       if (!statusRes.ok) {
         consecutiveErrors++;
         if (consecutiveErrors >= 5) {
-          throw new Error(`fal.ai status polling failed ${statusRes.status} (${consecutiveErrors}x in a row)`);
+          throw new Error(
+            `fal.ai status polling failed ${statusRes.status} (${consecutiveErrors}x in a row)`,
+          );
         }
         continue;
       }
@@ -235,7 +301,8 @@ export async function runFalImageToVideo(
       break;
     }
     if (status === "FAILED") {
-      const errMsg = statusData.error ?? `fal.ai job failed (request_id=${request_id})`;
+      const errMsg =
+        statusData.error ?? `fal.ai job failed (request_id=${request_id})`;
       throw new Error(errMsg);
     }
 
@@ -302,7 +369,8 @@ export async function runFalTextToVideo(
   const w = input.width ?? 576;
   const h = input.height ?? 1024;
   const aspectRatio = w > h ? "16:9" : w === h ? "1:1" : "9:16";
-  const duration = input.duration === "15s" ? 15 : input.duration === "10s" ? 10 : 5; // PixVerse C1 uses integer, not string
+  const duration =
+    input.duration === "15s" ? 15 : input.duration === "10s" ? 10 : 5; // PixVerse C1 uses integer, not string
 
   onProgress(5);
 
@@ -327,19 +395,26 @@ export async function runFalTextToVideo(
   const submitData = await submitRes.json();
   const { request_id, status_url, response_url } = submitData;
   if (!request_id) {
-    throw new Error(`fal.ai submit returned no request_id: ${JSON.stringify(submitData)}`);
+    throw new Error(
+      `fal.ai submit returned no request_id: ${JSON.stringify(submitData)}`,
+    );
   }
   onProgress(20);
 
-  const pollUrl = status_url ?? `${FAL_QUEUE_BASE}/${FAL_T2V_MODEL}/requests/${request_id}/status`;
-  const resultUrl = response_url ?? `${FAL_QUEUE_BASE}/${FAL_T2V_MODEL}/requests/${request_id}/response`;
+  const pollUrl =
+    status_url ??
+    `${FAL_QUEUE_BASE}/${FAL_T2V_MODEL}/requests/${request_id}/status`;
+  const resultUrl =
+    response_url ??
+    `${FAL_QUEUE_BASE}/${FAL_T2V_MODEL}/requests/${request_id}/response`;
   // PixVerse C1 result shape: { video: { url } } — same as the existing fallback chain
 
   const startMs = Date.now();
   let consecutiveErrors = 0;
   while (true) {
     if (signal?.aborted) throw new Error("Cancelled");
-    if (Date.now() - startMs > T2V_MAX_POLL_MS) throw new Error("fal.ai timed out after 10 minutes");
+    if (Date.now() - startMs > T2V_MAX_POLL_MS)
+      throw new Error("fal.ai timed out after 10 minutes");
 
     await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
     if (signal?.aborted) throw new Error("Cancelled");
@@ -352,7 +427,10 @@ export async function runFalTextToVideo(
       });
       if (!statusRes.ok) {
         consecutiveErrors++;
-        if (consecutiveErrors >= 5) throw new Error(`fal.ai polling failed ${statusRes.status} (${consecutiveErrors}x)`);
+        if (consecutiveErrors >= 5)
+          throw new Error(
+            `fal.ai polling failed ${statusRes.status} (${consecutiveErrors}x)`,
+          );
         continue;
       }
       consecutiveErrors = 0;
@@ -365,18 +443,29 @@ export async function runFalTextToVideo(
     }
 
     const { status } = statusData;
-    if (status === "COMPLETED") { onProgress(95); break; }
-    if (status === "FAILED") throw new Error(statusData.error ?? `fal.ai t2v failed (request_id=${request_id})`);
+    if (status === "COMPLETED") {
+      onProgress(95);
+      break;
+    }
+    if (status === "FAILED")
+      throw new Error(
+        statusData.error ?? `fal.ai t2v failed (request_id=${request_id})`,
+      );
 
     const elapsed = Math.min((Date.now() - startMs) / T2V_MAX_POLL_MS, 1);
-    onProgress(status === "IN_PROGRESS" ? Math.round(30 + elapsed * 60) : Math.round(20 + elapsed * 10));
+    onProgress(
+      status === "IN_PROGRESS"
+        ? Math.round(30 + elapsed * 60)
+        : Math.round(20 + elapsed * 10),
+    );
   }
 
   const resultRes = await fetch(resultUrl, {
     headers: { Authorization: `Key ${apiKey}` },
     signal,
   });
-  if (!resultRes.ok) throw new Error(`fal.ai result fetch failed ${resultRes.status}`);
+  if (!resultRes.ok)
+    throw new Error(`fal.ai result fetch failed ${resultRes.status}`);
   const result = await resultRes.json();
 
   const videoUrl: string =
@@ -385,7 +474,10 @@ export async function runFalTextToVideo(
     result?.output?.video?.url ??
     result?.outputs?.[0]?.url;
 
-  if (!videoUrl) throw new Error(`fal.ai t2v returned no video URL: ${JSON.stringify(result)}`);
+  if (!videoUrl)
+    throw new Error(
+      `fal.ai t2v returned no video URL: ${JSON.stringify(result)}`,
+    );
 
   onProgress(100);
   return videoUrl;
