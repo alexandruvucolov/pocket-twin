@@ -34,6 +34,7 @@ import {
 } from "../../../src/lib/modal-lipsync";
 import { transcribeAudio } from "../../../src/lib/openai";
 import { textToSpeech, textToSpeechBase64 } from "../../../src/lib/elevenlabs";
+import { submitReport } from "../../../src/lib/report";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 const AVATAR_PANEL_HEIGHT = Math.round(SCREEN_HEIGHT * 0.48);
@@ -76,7 +77,8 @@ const ENABLE_LOCAL_PHONE_TTS =
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { avatars, coins, messages, sendMessage, spendCoin, spendCoins } = useAvatars();
+  const { avatars, coins, messages, sendMessage, spendCoin, spendCoins } =
+    useAvatars();
   const insets = useSafeAreaInsets();
 
   const avatar = avatars.find((a: { id: string }) => a.id === id);
@@ -773,6 +775,24 @@ export default function ChatScreen() {
     setIsVoiceMode(false);
   }, []);
 
+  const handleReportMessage = (text: string) => {
+    Alert.alert("Report message", "Report this AI-generated message as harmful or inappropriate?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Report",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await submitReport({ type: "chat_message", content: text, avatarId: id ?? undefined });
+            Alert.alert("Reported", "Thank you. We'll review this message.");
+          } catch {
+            Alert.alert("Error", "Could not submit report. Please try again.");
+          }
+        },
+      },
+    ]);
+  };
+
   const startVoiceSession = useCallback(async () => {
     const { granted } = await AudioModule.requestRecordingPermissionsAsync();
     if (!granted) {
@@ -1209,7 +1229,14 @@ export default function ChatScreen() {
                     <View style={styles.sessionDividerLine} />
                   </View>
                 )}
-                <View
+                <TouchableOpacity
+                  activeOpacity={item.role === "user" ? 1 : 0.85}
+                  onLongPress={
+                    item.role !== "user"
+                      ? () => handleReportMessage(item.text)
+                      : undefined
+                  }
+                  delayLongPress={400}
                   style={[
                     styles.bubble,
                     item.role === "user" ? styles.bubbleUser : styles.bubbleBot,
@@ -1238,7 +1265,7 @@ export default function ChatScreen() {
                       {item.text}
                     </Text>
                   </View>
-                </View>
+                </TouchableOpacity>
               </>
             );
           }}

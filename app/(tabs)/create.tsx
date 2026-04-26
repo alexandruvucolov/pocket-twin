@@ -35,6 +35,7 @@ import {
   isCreateConfigured,
 } from "@/lib/create-serverless";
 import { enhancePrompt } from "@/lib/openai";
+import { submitReport } from "@/lib/report";
 
 const { width } = Dimensions.get("window");
 
@@ -250,11 +251,15 @@ export default function CreateScreen() {
     if (mode === "image") {
       cost = referenceImage ? COIN_COSTS.imageToImage : COIN_COSTS.textToImage;
     } else if (videoSource === "text") {
-      cost = selectedDuration === "15s" ? COIN_COSTS.t2v_15s
-           : selectedDuration === "10s" ? COIN_COSTS.t2v_10s
-           : COIN_COSTS.t2v_5s;
+      cost =
+        selectedDuration === "15s"
+          ? COIN_COSTS.t2v_15s
+          : selectedDuration === "10s"
+            ? COIN_COSTS.t2v_10s
+            : COIN_COSTS.t2v_5s;
     } else {
-      cost = selectedDuration === "10s" ? COIN_COSTS.i2v_10s : COIN_COSTS.i2v_5s;
+      cost =
+        selectedDuration === "10s" ? COIN_COSTS.i2v_10s : COIN_COSTS.i2v_5s;
     }
 
     if (coins < cost) {
@@ -352,6 +357,29 @@ export default function CreateScreen() {
   const handleCancel = () => {
     abortRef.current?.abort();
     setJobStatus(null);
+  };
+
+  const handleReport = (url: string) => {
+    const contentType = mode === "video" ? "generated_video" : "generated_image";
+    Alert.alert(
+      "Report content",
+      "Report this AI-generated content as harmful or inappropriate?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Report",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await submitReport({ type: contentType, content: url });
+              Alert.alert("Reported", "Thank you. We'll review this content.");
+            } catch {
+              Alert.alert("Error", "Could not submit report. Please try again.");
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -647,8 +675,8 @@ export default function CreateScreen() {
             {mode === "image"
               ? `${referenceImage ? COIN_COSTS.imageToImage : COIN_COSTS.textToImage} coin per image`
               : videoSource === "text"
-                ? `${ selectedDuration === "15s" ? COIN_COSTS.t2v_15s : selectedDuration === "10s" ? COIN_COSTS.t2v_10s : COIN_COSTS.t2v_5s } coins (${selectedDuration} T2V)`
-                : `${ selectedDuration === "10s" ? COIN_COSTS.i2v_10s : COIN_COSTS.i2v_5s } coins (${selectedDuration} I2V)`}
+                ? `${selectedDuration === "15s" ? COIN_COSTS.t2v_15s : selectedDuration === "10s" ? COIN_COSTS.t2v_10s : COIN_COSTS.t2v_5s} coins (${selectedDuration} T2V)`
+                : `${selectedDuration === "10s" ? COIN_COSTS.i2v_10s : COIN_COSTS.i2v_5s} coins (${selectedDuration} I2V)`}
           </Text>
         </View>
 
@@ -750,6 +778,13 @@ export default function CreateScreen() {
                   color={Colors.white}
                 />
                 <Text style={styles.resultBtnText}>Regenerate</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.resultBtn}
+                onPress={() => handleReport(result)}
+              >
+                <Ionicons name="flag-outline" size={18} color={Colors.white} />
+                <Text style={styles.resultBtnText}>Report</Text>
               </TouchableOpacity>
             </View>
           </View>

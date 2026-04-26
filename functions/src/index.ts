@@ -18,15 +18,24 @@ export const onUserDeleted = functions.auth.user().onDelete(async (user) => {
   // ── 1. Delete all Storage files under users/{uid}/ ──────────────────────
   try {
     await bucket.deleteFiles({ prefix: `users/${uid}/` });
-    functions.logger.info(`[onUserDeleted] Deleted Storage files for uid=${uid}`);
+    functions.logger.info(
+      `[onUserDeleted] Deleted Storage files for uid=${uid}`,
+    );
   } catch (err) {
-    functions.logger.error(`[onUserDeleted] Storage cleanup failed for uid=${uid}`, err);
+    functions.logger.error(
+      `[onUserDeleted] Storage cleanup failed for uid=${uid}`,
+      err,
+    );
   }
 
   // ── 2. Delete Firestore sub-collections recursively ──────────────────────
   // avatars sub-collection
   try {
-    const avatarsSnap = await db.collection("users").doc(uid).collection("avatars").get();
+    const avatarsSnap = await db
+      .collection("users")
+      .doc(uid)
+      .collection("avatars")
+      .get();
     const batch = db.batch();
     for (const avatarDoc of avatarsSnap.docs) {
       // Delete messages sub-collection under each avatar
@@ -37,16 +46,26 @@ export const onUserDeleted = functions.auth.user().onDelete(async (user) => {
       batch.delete(avatarDoc.ref);
     }
     await batch.commit();
-    functions.logger.info(`[onUserDeleted] Deleted Firestore avatars for uid=${uid}`);
+    functions.logger.info(
+      `[onUserDeleted] Deleted Firestore avatars for uid=${uid}`,
+    );
   } catch (err) {
-    functions.logger.error(`[onUserDeleted] Firestore avatars cleanup failed for uid=${uid}`, err);
+    functions.logger.error(
+      `[onUserDeleted] Firestore avatars cleanup failed for uid=${uid}`,
+      err,
+    );
   }
 
   // ── 3. Delete the top-level user document ────────────────────────────────
   try {
     await db.collection("users").doc(uid).delete();
-    functions.logger.info(`[onUserDeleted] Deleted Firestore user doc for uid=${uid}`);
+    functions.logger.info(
+      `[onUserDeleted] Deleted Firestore user doc for uid=${uid}`,
+    );
   } catch (err) {
-    functions.logger.error(`[onUserDeleted] Firestore user doc cleanup failed for uid=${uid}`, err);
+    functions.logger.error(
+      `[onUserDeleted] Firestore user doc cleanup failed for uid=${uid}`,
+      err,
+    );
   }
 });

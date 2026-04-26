@@ -265,7 +265,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!firebaseEnabled || !auth) return;
     try {
       setIsLoading(true);
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      await GoogleSignin.hasPlayServices({
+        showPlayServicesUpdateDialog: true,
+      });
       const signInResult = await GoogleSignin.signIn();
       const idToken = signInResult.data?.idToken;
       if (!idToken) throw new Error("Google Sign-In did not return an idToken");
@@ -337,7 +339,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, signIn, signUp, signInWithGoogle, signOut, updateUserProfile, deleteAccount }}
+      value={{
+        user,
+        isLoading,
+        signIn,
+        signUp,
+        signInWithGoogle,
+        signOut,
+        updateUserProfile,
+        deleteAccount,
+      }}
     >
       {children}
     </AuthContext.Provider>

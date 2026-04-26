@@ -226,7 +226,10 @@ export default function LoginScreen() {
 
           {/* Google */}
           <TouchableOpacity
-            style={[styles.googleButton, googleLoading && styles.buttonDisabled]}
+            style={[
+              styles.googleButton,
+              googleLoading && styles.buttonDisabled,
+            ]}
             onPress={handleGoogleSignIn}
             disabled={googleLoading || isLoading}
             activeOpacity={0.85}

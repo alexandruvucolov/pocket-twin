@@ -80,15 +80,17 @@ export default function SettingsScreen() {
               await deleteAccount();
               router.replace("/(auth)/login");
             } catch (err: unknown) {
-              const msg =
-                err instanceof Error ? err.message : String(err);
+              const msg = err instanceof Error ? err.message : String(err);
               if (msg.includes("requires-recent-login")) {
                 Alert.alert(
                   "Re-login required",
                   "For security, please sign out and sign back in before deleting your account.",
                 );
               } else {
-                Alert.alert("Error", "Could not delete account. Please try again.");
+                Alert.alert(
+                  "Error",
+                  "Could not delete account. Please try again.",
+                );
               }
             }
           },
@@ -186,19 +188,31 @@ export default function SettingsScreen() {
           <SettingsRow
             icon="lock-closed-outline"
             label="Privacy Policy"
-            onPress={() => Linking.openURL("https://alexandruvucolov.github.io/pockettwin-legal/privacy.html")}
+            onPress={() =>
+              Linking.openURL(
+                "https://alexandruvucolov.github.io/pockettwin-legal/privacy.html",
+              )
+            }
           />
           <View style={styles.divider} />
           <SettingsRow
             icon="document-text-outline"
             label="Terms of Service"
-            onPress={() => Linking.openURL("https://alexandruvucolov.github.io/pockettwin-legal/terms.html")}
+            onPress={() =>
+              Linking.openURL(
+                "https://alexandruvucolov.github.io/pockettwin-legal/terms.html",
+              )
+            }
           />
           <View style={styles.divider} />
           <SettingsRow
             icon="flag-outline"
             label="Report an Issue"
-            onPress={() => Linking.openURL("mailto:sales@atech-tools.com?subject=Issue%20Report")}
+            onPress={() =>
+              Linking.openURL(
+                "mailto:sales@atech-tools.com?subject=Issue%20Report",
+              )
+            }
           />
           <View style={styles.divider} />
           <SettingsRow
