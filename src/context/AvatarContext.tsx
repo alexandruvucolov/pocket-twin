@@ -365,23 +365,26 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const contextValue = useMemo(
+    () => ({
+      avatars,
+      coins,
+      messages,
+      addAvatar,
+      removeAvatar,
+      clearAvatars,
+      addMessage,
+      addCoins,
+      spendCoin,
+      spendCoins,
+      sendMessage,
+      updateAvatarVideoUrl,
+    }),
+    [avatars, coins, messages],
+  );
+
   return (
-    <AvatarContext.Provider
-      value={{
-        avatars,
-        coins,
-        messages,
-        addAvatar,
-        removeAvatar,
-        clearAvatars,
-        addMessage,
-        addCoins,
-        spendCoin,
-        spendCoins,
-        sendMessage,
-        updateAvatarVideoUrl,
-      }}
-    >
+    <AvatarContext.Provider value={contextValue}>
       {children}
     </AvatarContext.Provider>
   );

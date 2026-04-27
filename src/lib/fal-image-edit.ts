@@ -77,38 +77,50 @@ async function uploadToFal(
 ): Promise<string> {
   const apiKey = falApiKey();
 
-  const initiateRes = await fetch(FAL_STORAGE_INITIATE, {
-    method: "POST",
-    headers: {
-      Authorization: `Key ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      content_type: "image/jpeg",
-      file_name: "image.jpg",
-    }),
-    signal,
-  });
-  if (!initiateRes.ok) {
-    const text = await initiateRes.text();
-    throw new Error(
-      `fal.ai storage initiate failed ${initiateRes.status}: ${text}`,
-    );
-  }
-  const { upload_url, file_url } = await initiateRes.json();
+  // Internal 60s timeout so a stalled connection can't hang forever.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
+  const internalSignal = controller.signal;
 
-  const bytes = base64ToBytes(imageBase64);
-  const uploadRes = await fetch(upload_url, {
-    method: "PUT",
-    headers: { "Content-Type": "image/jpeg" },
-    body: bytes,
-    signal,
-  });
-  if (!uploadRes.ok) {
-    throw new Error(`fal.ai storage upload failed ${uploadRes.status}`);
-  }
+  try {
+    const initiateRes = await fetch(FAL_STORAGE_INITIATE, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        content_type: "image/jpeg",
+        file_name: "image.jpg",
+      }),
+      signal: internalSignal,
+    });
+    if (!initiateRes.ok) {
+      const text = await initiateRes.text();
+      throw new Error(
+        `fal.ai storage initiate failed ${initiateRes.status}: ${text}`,
+      );
+    }
+    const { upload_url, file_url } = await initiateRes.json();
 
-  return file_url as string;
+    const bytes = base64ToBytes(imageBase64);
+    const uploadRes = await fetch(upload_url, {
+      method: "PUT",
+      headers: { "Content-Type": "image/jpeg" },
+      body: bytes,
+      signal: internalSignal,
+    });
+    if (!uploadRes.ok) {
+      throw new Error(`fal.ai storage upload failed ${uploadRes.status}`);
+    }
+
+    return file_url as string;
+  } finally {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback } from "react";
 import {
   View,
   Text,
@@ -23,18 +23,22 @@ import { Avatar } from "@/types/avatar";
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - 24 * 2 - 12) / 2;
 
-function AvatarCard({
+function AvatarCardImpl({
   avatar,
   onPress,
   onDelete,
 }: {
   avatar: Avatar;
-  onPress: () => void;
-  onDelete: () => void;
+  onPress: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
 }) {
   return (
     <View style={styles.cardWrapper}>
-      <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={1}>
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => onPress(avatar.id)}
+        activeOpacity={1}
+      >
         <Image source={{ uri: avatar.imageUri }} style={styles.cardImage} />
         <View style={styles.cardOverlay}>
           <Text style={styles.cardName} numberOfLines={1}>
@@ -46,18 +50,57 @@ function AvatarCard({
         </View>
         {avatar.lastChatAt && <View style={styles.activeDot} />}
       </TouchableOpacity>
-      <TouchableOpacity style={styles.deleteBtn} onPress={onDelete} hitSlop={8}>
+      <TouchableOpacity
+        style={styles.deleteBtn}
+        onPress={() => onDelete(avatar.id, avatar.name)}
+        hitSlop={8}
+      >
         <Text style={styles.deleteBtnText}>✕</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
+const AvatarCard = React.memo(AvatarCardImpl);
+
 export default function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { avatars, coins, removeAvatar } = useAvatars();
   const insets = useSafeAreaInsets();
+
+  const handleAvatarPress = useCallback(
+    (id: string) => router.push(`/chat/${id}`),
+    [router],
+  );
+
+  const handleAvatarDelete = useCallback(
+    (id: string, name: string) =>
+      Alert.alert(
+        "Delete Avatar",
+        `Are you sure you want to delete "${name}"?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => removeAvatar(id),
+          },
+        ],
+      ),
+    [removeAvatar],
+  );
+
+  const renderAvatar = useCallback(
+    ({ item }: { item: Avatar }) => (
+      <AvatarCard
+        avatar={item}
+        onPress={handleAvatarPress}
+        onDelete={handleAvatarDelete}
+      />
+    ),
+    [handleAvatarPress, handleAvatarDelete],
+  );
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
@@ -131,26 +174,7 @@ export default function HomeScreen() {
             { paddingBottom: 58 + insets.bottom + 16 },
           ]}
           showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <AvatarCard
-              avatar={item}
-              onPress={() => router.push(`/chat/${item.id}`)}
-              onDelete={() =>
-                Alert.alert(
-                  "Delete Avatar",
-                  `Are you sure you want to delete "${item.name}"?`,
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Delete",
-                      style: "destructive",
-                      onPress: () => removeAvatar(item.id),
-                    },
-                  ],
-                )
-              }
-            />
-          )}
+          renderItem={renderAvatar}
         />
       )}
     </SafeAreaView>

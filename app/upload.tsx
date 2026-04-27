@@ -686,6 +686,7 @@ const styles = StyleSheet.create({
     borderRadius: (width * 0.65) / 2,
     borderWidth: 4,
     borderColor: Colors.primary,
+    resizeMode: "cover",
   },
   retakeButton: {
     marginTop: 12,
@@ -773,6 +774,7 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: Colors.primary,
     opacity: 0.8,
+    resizeMode: "cover",
   },
   animatingTitle: {
     color: Colors.text,

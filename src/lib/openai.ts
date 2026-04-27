@@ -105,7 +105,6 @@ export async function transcribeAudio(localUri: string): Promise<string> {
   const apiKey = getApiKey();
 
   const { type, name } = mimeFromUri(localUri);
-  console.log("[Whisper] transcribing uri:", localUri, "type:", type);
 
   const formData = new FormData();
   formData.append("file", {

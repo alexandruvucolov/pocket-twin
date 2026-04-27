@@ -2,6 +2,7 @@ import React, {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useState,
   ReactNode,
 } from "react";
@@ -424,30 +425,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const isGoogleUser =
+    auth?.currentUser?.providerData.some(
+      (p) => p.providerId === "google.com",
+    ) ?? false;
+
+  const contextValue = useMemo(
+    () => ({
+      user,
+      isLoading,
+      signIn,
+      signUp,
+      signInWithGoogle,
+      signOut,
+      resetPassword,
+      updateUserProfile,
+      deleteAccount,
+      reAuthAndDelete,
+      isGoogleUser,
+      emailVerified: user?.emailVerified ?? false,
+      resendVerificationEmail: async () => {
+        if (!auth?.currentUser) throw new Error("Not signed in");
+        await sendEmailVerification(auth.currentUser);
+      },
+    }),
+    [user, isLoading, isGoogleUser],
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        isLoading,
-        signIn,
-        signUp,
-        signInWithGoogle,
-        signOut,
-        resetPassword,
-        updateUserProfile,
-        deleteAccount,
-        reAuthAndDelete,
-        isGoogleUser:
-          auth?.currentUser?.providerData.some(
-            (p) => p.providerId === "google.com",
-          ) ?? false,
-        emailVerified: user?.emailVerified ?? false,
-        resendVerificationEmail: async () => {
-          if (!auth?.currentUser) throw new Error("Not signed in");
-          await sendEmailVerification(auth.currentUser);
-        },
-      }}
-    >
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

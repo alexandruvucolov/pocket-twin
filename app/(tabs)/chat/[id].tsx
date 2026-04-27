@@ -490,7 +490,6 @@ export default function ChatScreen() {
       return;
     const turnId = ++voiceTurnIdRef.current;
     isStartingListeningRef.current = true;
-    console.log("[Voice] startVoiceListening called");
     setVoicePhase("listening");
     setIsRecording(true);
     setLastVoiceTranscript("");
@@ -501,7 +500,6 @@ export default function ChatScreen() {
       if (!isVoiceSessionActive(sessionId)) return;
 
       const recorder = createVoiceRecorder();
-      console.log("[Voice] calling prepareToRecordAsync");
       await recorder.prepareToRecordAsync(RecordingPresets.HIGH_QUALITY);
       if (
         !isVoiceSessionActive(sessionId) ||
@@ -510,9 +508,7 @@ export default function ChatScreen() {
         await disposeVoiceRecorder();
         return;
       }
-      console.log("[Voice] calling record()");
       recorder.record();
-      console.log("[Voice] recording started");
 
       recordingStartRef.current = Date.now();
       speechDetectedRef.current = false;
@@ -545,9 +541,6 @@ export default function ChatScreen() {
         }
         const recordAge = Date.now() - recordingStartRef.current;
         const silenceAge = Date.now() - lastAudioTimeRef.current;
-        console.log(
-          `[Voice] tick — recordAge:${recordAge} silenceAge:${silenceAge}`,
-        );
         if (recordAge <= MIN_RECORD_MS) return;
 
         // Normal path: user spoke, then paused long enough
@@ -611,7 +604,6 @@ export default function ChatScreen() {
       // Give the OS time to flush the file to disk (Android needs this)
       await new Promise((r) => setTimeout(r, 400));
       const uri = recorder.uri;
-      console.log("[Voice] recorded uri:", uri);
       if (!uri) throw new Error("Recorder returned no URI after stop.");
 
       // Verify the file actually exists before sending to Whisper
@@ -628,7 +620,6 @@ export default function ChatScreen() {
         fileSize = (fileInfo as { size?: number }).size ?? 0;
       }
 
-      console.log("[Voice] file info:", JSON.stringify(fileInfo));
       if (!fileInfo.exists)
         throw new Error("Audio file not found on disk: " + uri);
       if (fileSize === 0)
@@ -637,7 +628,6 @@ export default function ChatScreen() {
       const fileMtime =
         (fileInfo as { modificationTime?: number }).modificationTime ?? 0;
       const recordingFingerprint = `${uri}|${fileSize}|${fileMtime}`;
-      console.log("[Voice] recording fingerprint:", recordingFingerprint);
       if (recordingFingerprint === lastRecordingFingerprintRef.current) {
         console.warn(
           "[Voice] stale recording detected; forcing recorder reset",
@@ -652,9 +642,6 @@ export default function ChatScreen() {
       // threshold → the recording is silence. Skip Whisper entirely; it will
       // only hallucinate random words if we send it.
       if (meterEventsSeenRef.current && !speechDetectedRef.current) {
-        console.log(
-          "[Voice] no speech detected above threshold – skipping Whisper",
-        );
         setIsTranscribing(false);
         shouldRestartListening = isVoiceSessionActive(sessionId);
         return;
@@ -681,10 +668,6 @@ export default function ChatScreen() {
 
       // Hallucination filter: Whisper returns these phrases on silence/noise.
       if (WHISPER_HALLUCINATIONS.has(transcript.toLowerCase().trim())) {
-        console.log(
-          "[Voice] discarding Whisper hallucination:",
-          JSON.stringify(transcript),
-        );
         shouldRestartListening = isVoiceSessionActive(sessionId);
         return;
       }
