@@ -14,6 +14,7 @@ import {
   Alert,
   Modal,
   StatusBar,
+  Platform,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
@@ -110,12 +111,13 @@ export default function CreateScreen() {
   const [jobStatus, setJobStatus] = useState<CreateJobStatus | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [savedItems, setSavedItems] = useState<
-    { uri: string; type: "image" | "video"; thumbnail?: string }[]
+    { uri: string; localUri: string; type: "image" | "video"; thumbnail?: string }[]
   >([]);
   const [savedMessage, setSavedMessage] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [lightboxItem, setLightboxItem] = useState<{
     uri: string;
+    localUri: string;
     type: "image" | "video";
   } | null>(null);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -157,6 +159,7 @@ export default function CreateScreen() {
           "Permission required",
           "Allow access to your photo library to save.",
         );
+        setIsSaving(false);
         return;
       }
       let localUri: string;
@@ -169,7 +172,7 @@ export default function CreateScreen() {
         await cacheFile.write(b64, { encoding: "base64" });
         localUri = cacheFile.uri;
       } else {
-        const downloaded = await File.downloadFileAsync(result, Paths.cache);
+        const downloaded = await File.downloadFileAsync(result, Paths.cache, { idempotent: true });
         localUri = downloaded.uri;
       }
       await MediaLibrary.saveToLibraryAsync(localUri);
@@ -177,17 +180,17 @@ export default function CreateScreen() {
       if (mode === "video") {
         let thumbnail: string | undefined;
         try {
-          const t = await VideoThumbnails.getThumbnailAsync(result, {
+          const t = await VideoThumbnails.getThumbnailAsync(localUri, {
             time: 0,
           });
           thumbnail = t.uri;
         } catch (_) {}
         setSavedItems((prev) => [
-          { uri: result, type: "video", thumbnail },
+          { uri: result, localUri, type: "video", thumbnail },
           ...prev,
         ]);
       } else {
-        setSavedItems((prev) => [{ uri: result, type: "image" }, ...prev]);
+        setSavedItems((prev) => [{ uri: result, localUri, type: "image" }, ...prev]);
       }
       // Show banner in the result card, then dismiss after 2s
       setIsSaving(false);
@@ -217,7 +220,7 @@ export default function CreateScreen() {
         await cacheFile.write(b64, { encoding: "base64" });
         localUri = cacheFile.uri;
       } else {
-        const downloaded = await File.downloadFileAsync(result, Paths.cache);
+        const downloaded = await File.downloadFileAsync(result, Paths.cache, { idempotent: true });
         localUri = downloaded.uri;
       }
       await Sharing.shareAsync(localUri, {
@@ -758,7 +761,7 @@ export default function CreateScreen() {
                   size={18}
                   color={Colors.white}
                 />
-                <Text style={styles.resultBtnText}>Save</Text>
+                <Text style={styles.resultBtnText} numberOfLines={1} adjustsFontSizeToFit>Save</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.resultBtn} onPress={handleShare}>
                 <Ionicons
@@ -766,7 +769,7 @@ export default function CreateScreen() {
                   size={18}
                   color={Colors.white}
                 />
-                <Text style={styles.resultBtnText}>Share</Text>
+                <Text style={styles.resultBtnText} numberOfLines={1} adjustsFontSizeToFit>Share</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.resultBtn, styles.resultBtnPrimary]}
@@ -777,14 +780,14 @@ export default function CreateScreen() {
                   size={18}
                   color={Colors.white}
                 />
-                <Text style={styles.resultBtnText}>Regenerate</Text>
+                <Text style={styles.resultBtnText} numberOfLines={1} adjustsFontSizeToFit>Retry</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.resultBtn}
                 onPress={() => handleReport(result)}
               >
                 <Ionicons name="flag-outline" size={18} color={Colors.white} />
-                <Text style={styles.resultBtnText}>Report</Text>
+                <Text style={styles.resultBtnText} numberOfLines={1} adjustsFontSizeToFit>Report</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -799,7 +802,7 @@ export default function CreateScreen() {
                 <TouchableOpacity
                   key={index}
                   style={styles.galleryItem}
-                  onPress={() => setLightboxItem(item)}
+                  onPress={() => setLightboxItem({ uri: item.uri, localUri: item.localUri, type: item.type })}
                   activeOpacity={0.85}
                 >
                   <Image
@@ -849,26 +852,7 @@ export default function CreateScreen() {
             onPress={async () => {
               if (!lightboxItem) return;
               try {
-                let localUri: string;
-                if (lightboxItem.uri.startsWith("data:image/")) {
-                  const b64 = lightboxItem.uri.replace(
-                    /^data:image\/\w+;base64,/,
-                    "",
-                  );
-                  const cacheFile = new File(
-                    Paths.cache,
-                    `pocket-twin-share-${Date.now()}.png`,
-                  );
-                  await cacheFile.write(b64, { encoding: "base64" });
-                  localUri = cacheFile.uri;
-                } else {
-                  const downloaded = await File.downloadFileAsync(
-                    lightboxItem.uri,
-                    Paths.cache,
-                  );
-                  localUri = downloaded.uri;
-                }
-                await Sharing.shareAsync(localUri, {
+                await Sharing.shareAsync(lightboxItem.localUri, {
                   mimeType:
                     lightboxItem.type === "video" ? "video/mp4" : "image/png",
                   dialogTitle: "Share your creation",
@@ -888,20 +872,7 @@ export default function CreateScreen() {
               onPress={async () => {
                 if (!lightboxItem) return;
                 try {
-                  let b64: string;
-                  if (lightboxItem.uri.startsWith("data:image/")) {
-                    b64 = lightboxItem.uri.replace(
-                      /^data:image\/\w+;base64,/,
-                      "",
-                    );
-                  } else {
-                    const downloaded = await File.downloadFileAsync(
-                      lightboxItem.uri,
-                      Paths.cache,
-                    );
-                    const bytes = await new File(downloaded.uri).bytes();
-                    b64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
-                  }
+                  const b64 = await new File(lightboxItem.localUri).base64();
                   await Clipboard.setImageAsync(b64);
                   Alert.alert("Copied", "Image copied to clipboard");
                 } catch (e: any) {
@@ -915,13 +886,13 @@ export default function CreateScreen() {
           {lightboxItem &&
             (lightboxItem.type === "video" ? (
               <VideoPlayerResult
-                uri={lightboxItem.uri}
+                uri={lightboxItem.localUri}
                 style={styles.lightboxMedia}
                 contentFit="contain"
               />
             ) : (
               <Image
-                source={{ uri: lightboxItem.uri }}
+                source={{ uri: lightboxItem.localUri }}
                 style={styles.lightboxMedia}
                 resizeMode="contain"
               />
@@ -1177,18 +1148,21 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
+    gap: 4,
     paddingVertical: 10,
+    paddingHorizontal: 4,
     borderRadius: 10,
     backgroundColor: Colors.surfaceHigh,
+    overflow: "hidden",
   },
   resultBtnPrimary: {
     backgroundColor: Colors.primary,
   },
   resultBtnText: {
     color: Colors.white,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "600",
+    flexShrink: 1,
   },
   // Saved gallery
   galleryGrid: {

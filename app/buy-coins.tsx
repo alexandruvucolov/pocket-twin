@@ -11,8 +11,10 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "@/constants/colors";
 import { useAvatars } from "@/context/AvatarContext";
+import { useAuth } from "@/context/AuthContext";
 import { COIN_PACKS } from "@/constants/dummy";
 
 const { width } = Dimensions.get("window");
@@ -20,9 +22,11 @@ const { width } = Dimensions.get("window");
 export default function BuyCoinsScreen() {
   const router = useRouter();
   const { coins, addCoins } = useAvatars();
+  const { emailVerified, isGoogleUser, resendVerificationEmail } = useAuth();
   const [selectedPack, setSelectedPack] = useState<string | null>("coins_200");
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
 
   const handleFreeClaim = async () => {
     setIsClaiming(true);
@@ -54,6 +58,21 @@ export default function BuyCoinsScreen() {
     );
   };
 
+  const handleResendVerification = async () => {
+    setResendLoading(true);
+    try {
+      await resendVerificationEmail();
+      Alert.alert("Email sent", "Check your inbox for the verification link.");
+    } catch {
+      Alert.alert("Error", "Could not send verification email. Please try again.");
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
+  // Gate: email/password users must verify their email before purchasing.
+  const needsVerification = !isGoogleUser && !emailVerified;
+
   return (
     <SafeAreaView style={styles.root}>
       {/* Header */}
@@ -70,6 +89,35 @@ export default function BuyCoinsScreen() {
         </View>
       </View>
 
+      {needsVerification ? (
+        <View style={styles.gateContainer}>
+          <Ionicons name="mail-outline" size={64} color={Colors.primary} />
+          <Text style={styles.gateTitle}>Verify your email</Text>
+          <Text style={styles.gateSub}>
+            Please verify your email address before purchasing coins. Check your
+            inbox for the link we sent when you signed up.
+          </Text>
+          <TouchableOpacity
+            style={[styles.gateResendBtn, resendLoading && styles.buyButtonDisabled]}
+            onPress={handleResendVerification}
+            disabled={resendLoading}
+            activeOpacity={0.85}
+          >
+            {resendLoading ? (
+              <ActivityIndicator color={Colors.white} />
+            ) : (
+              <Text style={styles.buyButtonText}>Resend Verification Email</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.gateCancelBtn}
+            onPress={() => router.back()}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.gateCancelText}>Go back</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
@@ -207,6 +255,7 @@ export default function BuyCoinsScreen() {
           automatically. Cancel anytime in your device settings.
         </Text>
       </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -480,5 +529,46 @@ const styles = StyleSheet.create({
     color: Colors.success,
     fontSize: 26,
     fontWeight: "300",
+  },
+  gateContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+    gap: 16,
+  },
+  gateTitle: {
+    color: Colors.text,
+    fontSize: 22,
+    fontWeight: "800",
+    textAlign: "center",
+    marginTop: 8,
+  },
+  gateSub: {
+    color: Colors.textMuted,
+    fontSize: 14,
+    textAlign: "center",
+    lineHeight: 22,
+  },
+  gateResendBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 32,
+    alignItems: "center",
+    alignSelf: "stretch",
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  gateCancelBtn: {
+    marginTop: 4,
+    paddingVertical: 10,
+  },
+  gateCancelText: {
+    color: Colors.textMuted,
+    fontSize: 14,
   },
 });

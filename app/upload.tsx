@@ -29,11 +29,6 @@ import {
   getFirebaseErrorMessage,
   uploadAvatarImage,
 } from "@/lib/firebase";
-import {
-  createLivePortraitVideo,
-  getDefaultLivePortraitDrivingVideoUrl,
-  isLivePortraitConfigured,
-} from "@/lib/liveportrait";
 
 const { width, height } = Dimensions.get("window");
 
@@ -174,55 +169,21 @@ export default function UploadScreen() {
 
       setProgress(50);
 
-      let resultVideoUrl: string | undefined;
-
-      if (
-        isLivePortraitConfigured() &&
-        firebaseEnabled &&
-        user &&
-        /^https?:\/\//i.test(finalImageUri) &&
-        getDefaultLivePortraitDrivingVideoUrl()
-      ) {
-        resultVideoUrl = await createLivePortraitVideo({
-          sourceImageUrl: finalImageUri,
-          onStatus: (message) => {
-            if (message.includes("Submitting")) {
-              setProgress(58);
-              return;
-            }
-
-            if (message.includes("in_queue")) {
-              setProgress(66);
-              return;
-            }
-
-            if (message.includes("in_progress")) {
-              setProgress(82);
-              return;
-            }
-
-            if (message.includes("completed")) {
-              setProgress(96);
-            }
-          },
-        });
-      } else {
-        for (const p of [65, 80, 100]) {
-          await new Promise((r) => setTimeout(r, 200));
-          setProgress(p);
-        }
+      for (const p of [65, 80, 100]) {
+        await new Promise((r) => setTimeout(r, 200));
+        setProgress(p);
       }
 
       setProgress(100);
 
-      setVideoUrl(resultVideoUrl ?? null);
+      setVideoUrl(null);
 
       addAvatar({
         id: avatarId,
         name: avatarName.trim(),
         voiceId: voiceId.trim() || undefined,
         imageUri: finalImageUri,
-        videoUrl: resultVideoUrl,
+        videoUrl: undefined,
         createdAt: new Date(),
         messageCount: 0,
       });

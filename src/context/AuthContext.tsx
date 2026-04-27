@@ -5,16 +5,21 @@ import React, {
   useState,
   ReactNode,
 } from "react";
+import { AppState } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   GoogleSignin,
   statusCodes,
 } from "@react-native-google-signin/google-signin";
 import {
+  EmailAuthProvider,
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
   deleteUser,
   onAuthStateChanged,
+  reauthenticateWithCredential,
+  sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithCredential,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
@@ -39,6 +44,7 @@ export interface User {
   email: string;
   displayName: string;
   photoURL?: string;
+  emailVerified: boolean;
 }
 
 interface AuthContextType {
@@ -48,8 +54,13 @@ interface AuthContextType {
   signUp: (email: string, password: string, name: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
   updateUserProfile: (displayName: string, photoURL?: string) => Promise<void>;
   deleteAccount: () => Promise<void>;
+  reAuthAndDelete: (password?: string) => Promise<void>;
+  isGoogleUser: boolean;
+  emailVerified: boolean;
+  resendVerificationEmail: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -65,6 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: string | null;
       displayName: string | null;
       photoURL: string | null;
+      emailVerified: boolean;
     },
     profile?: { displayName?: string | null; photoURL?: string | null },
   ): User => ({
@@ -76,6 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       firebaseUser.email?.split("@")[0] ||
       "User",
     photoURL: profile?.photoURL ?? firebaseUser.photoURL ?? undefined,
+    emailVerified: firebaseUser.emailVerified,
   });
 
   useEffect(() => {
@@ -193,17 +206,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     initAuth();
 
+    // Reload the Firebase user when the app comes back to the foreground.
+    // This ensures emailVerified reflects the latest state after the user
+    // taps the verification link in their email and returns to the app.
+    const appStateSub = AppState.addEventListener("change", async (state) => {
+      if (state === "active" && firebaseAuth.currentUser) {
+        try {
+          await firebaseAuth.currentUser.reload();
+          if (isMounted) {
+            setUser((prev) =>
+              prev ? { ...prev, emailVerified: firebaseAuth.currentUser!.emailVerified } : prev,
+            );
+          }
+        } catch {
+          // ignore — user may have signed out
+        }
+      }
+    });
+
     return () => {
       isMounted = false;
       if (timeoutId) clearTimeout(timeoutId);
       unsubscribe();
+      appStateSub.remove();
     };
   }, []);
 
   const signIn = async (email: string, _password: string) => {
     if (firebaseEnabled && auth) {
       setIsLoading(true);
-      await signInWithEmailAndPassword(auth, email, _password);
+      try {
+        await signInWithEmailAndPassword(auth, email, _password);
+      } catch (err) {
+        setIsLoading(false);
+        throw err;
+      }
       setIsLoading(false);
       return;
     }
@@ -222,30 +259,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signUp = async (email: string, _password: string, name: string) => {
     if (firebaseEnabled && auth) {
       setIsLoading(true);
-      const credential = await createUserWithEmailAndPassword(
-        auth,
-        email,
-        _password,
-      );
-      await updateProfile(credential.user, {
-        displayName: name,
-      });
-
-      if (db) {
-        await setDoc(
-          doc(db, "users", credential.user.uid),
-          {
-            email,
-            displayName: name,
-            photoURL: null,
-            coins: 12,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true },
+      try {
+        const credential = await createUserWithEmailAndPassword(
+          auth,
+          email,
+          _password,
         );
-      }
+        await updateProfile(credential.user, {
+          displayName: name,
+        });
 
+        // Send verification email — fire and forget, don't block signup.
+        sendEmailVerification(credential.user).catch(() => {});
+
+        if (db) {
+          await setDoc(
+            doc(db, "users", credential.user.uid),
+            {
+              email,
+              displayName: name,
+              photoURL: null,
+              coins: 12,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true },
+          );
+        }
+      } catch (err) {
+        setIsLoading(false);
+        throw err;
+      }
       setIsLoading(false);
       return;
     }
@@ -321,6 +365,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const resetPassword = async (email: string) => {
+    if (!firebaseEnabled || !auth) throw new Error("Firebase not configured");
+    await sendPasswordResetEmail(auth, email);
+  };
+
   const deleteAccount = async () => {
     if (!firebaseEnabled || !auth?.currentUser) return;
     const currentUser = auth.currentUser;
@@ -337,6 +386,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  /**
+   * Re-authenticates the current user (Google or email/password) then deletes
+   * the account. Call this when deleteAccount throws auth/requires-recent-login.
+   * For Google users pass no arguments — it triggers a fresh Google Sign-In.
+   * For email users pass the user's current password.
+   */
+  const reAuthAndDelete = async (password?: string) => {
+    if (!firebaseEnabled || !auth?.currentUser) return;
+    const currentUser = auth.currentUser;
+    const isGoogleUser = currentUser.providerData.some(
+      (p) => p.providerId === "google.com",
+    );
+
+    if (isGoogleUser) {
+      await GoogleSignin.hasPlayServices();
+      const signInResult = await GoogleSignin.signIn();
+      const idToken = signInResult.data?.idToken;
+      if (!idToken) throw new Error("Google re-auth did not return an idToken");
+      const credential = GoogleAuthProvider.credential(idToken);
+      await reauthenticateWithCredential(currentUser, credential);
+    } else {
+      if (!password) throw new Error("Password required for re-authentication");
+      const credential = EmailAuthProvider.credential(
+        currentUser.email ?? "",
+        password,
+      );
+      await reauthenticateWithCredential(currentUser, credential);
+    }
+
+    if (db) {
+      await deleteDoc(doc(db, "users", currentUser.uid)).catch(() => {});
+    }
+    await AsyncStorage.removeItem(SIGNED_IN_KEY).catch(() => {});
+    await GoogleSignin.signOut().catch(() => {});
+    await deleteUser(currentUser);
+    setUser(null);
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -346,8 +433,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signUp,
         signInWithGoogle,
         signOut,
+        resetPassword,
         updateUserProfile,
         deleteAccount,
+        reAuthAndDelete,
+        isGoogleUser:
+          auth?.currentUser?.providerData.some(
+            (p) => p.providerId === "google.com",
+          ) ?? false,
+        emailVerified: user?.emailVerified ?? false,
+        resendVerificationEmail: async () => {
+          if (!auth?.currentUser) throw new Error("Not signed in");
+          await sendEmailVerification(auth.currentUser);
+        },
       }}
     >
       {children}

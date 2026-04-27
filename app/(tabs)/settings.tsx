@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,9 @@ import {
   Alert,
   Image,
   Linking,
+  Modal,
+  TextInput,
+  ActivityIndicator,
 } from "react-native";
 import {
   SafeAreaView,
@@ -62,9 +65,15 @@ function SettingsRow({
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, signOut, deleteAccount } = useAuth();
+  const { user, signOut, deleteAccount, reAuthAndDelete, isGoogleUser } = useAuth();
   const { avatars, coins, clearAvatars } = useAvatars();
   const insets = useSafeAreaInsets();
+
+  const [reAuthVisible, setReAuthVisible] = useState(false);
+  const [reAuthPassword, setReAuthPassword] = useState("");
+  const [reAuthLoading, setReAuthLoading] = useState(false);
+  const [reAuthError, setReAuthError] = useState("");
+  const [showReAuthPassword, setShowReAuthPassword] = useState(false);
 
   const handleDeleteAccount = () => {
     Alert.alert(
@@ -80,23 +89,42 @@ export default function SettingsScreen() {
               await deleteAccount();
               router.replace("/(auth)/login");
             } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              if (msg.includes("requires-recent-login")) {
-                Alert.alert(
-                  "Re-login required",
-                  "For security, please sign out and sign back in before deleting your account.",
-                );
+              const code = (err as { code?: string })?.code ?? "";
+              if (code === "auth/requires-recent-login") {
+                // Need to re-authenticate first
+                setReAuthPassword("");
+                setReAuthError("");
+                setReAuthVisible(true);
               } else {
-                Alert.alert(
-                  "Error",
-                  "Could not delete account. Please try again.",
-                );
+                Alert.alert("Error", "Could not delete account. Please try again.");
               }
             }
           },
         },
       ],
     );
+  };
+
+  const handleReAuthAndDelete = async () => {
+    setReAuthError("");
+    setReAuthLoading(true);
+    try {
+      await reAuthAndDelete(reAuthPassword || undefined);
+      setReAuthVisible(false);
+      router.replace("/(auth)/login");
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code ?? "";
+      if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+        setReAuthError("Incorrect password. Please try again.");
+      } else if (code === "SIGN_IN_CANCELLED" || code === "sign_in_cancelled") {
+        // Google re-auth cancelled — just close
+        setReAuthVisible(false);
+      } else {
+        setReAuthError("Re-authentication failed. Please try again.");
+      }
+    } finally {
+      setReAuthLoading(false);
+    }
   };
 
   const handleLogout = () => {
@@ -283,6 +311,89 @@ export default function SettingsScreen() {
 
         <Text style={styles.version}>Pocket Twin MVP · v1.0.0</Text>
       </ScrollView>
+
+      {/* Re-authentication modal shown when deleteAccount throws auth/requires-recent-login */}
+      <Modal
+        visible={reAuthVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setReAuthVisible(false)}
+      >
+        <View style={styles.reAuthOverlay}>
+          <View style={styles.reAuthCard}>
+            <Text style={styles.reAuthTitle}>Confirm Your Identity</Text>
+            <Text style={styles.reAuthSubtitle}>
+              For security, please re-authenticate before deleting your account.
+            </Text>
+
+            {isGoogleUser ? (
+              <TouchableOpacity
+                style={styles.reAuthGoogleBtn}
+                onPress={handleReAuthAndDelete}
+                disabled={reAuthLoading}
+                activeOpacity={0.8}
+              >
+                {reAuthLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="logo-google" size={18} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={styles.reAuthGoogleBtnText}>Continue with Google</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            ) : (
+              <>
+                <View style={styles.reAuthInputWrap}>
+                  <TextInput
+                    style={styles.reAuthInput}
+                    placeholder="Current password"
+                    placeholderTextColor={Colors.textMuted}
+                    secureTextEntry={!showReAuthPassword}
+                    value={reAuthPassword}
+                    onChangeText={(t) => { setReAuthPassword(t); setReAuthError(""); }}
+                    autoCapitalize="none"
+                    editable={!reAuthLoading}
+                  />
+                  <TouchableOpacity
+                    style={styles.reAuthEye}
+                    onPress={() => setShowReAuthPassword((v) => !v)}
+                  >
+                    <Ionicons
+                      name={showReAuthPassword ? "eye-off-outline" : "eye-outline"}
+                      size={18}
+                      color={Colors.textMuted}
+                    />
+                  </TouchableOpacity>
+                </View>
+                {reAuthError ? (
+                  <Text style={styles.reAuthError}>{reAuthError}</Text>
+                ) : null}
+                <TouchableOpacity
+                  style={[styles.reAuthConfirmBtn, reAuthLoading && { opacity: 0.6 }]}
+                  onPress={handleReAuthAndDelete}
+                  disabled={reAuthLoading || !reAuthPassword}
+                  activeOpacity={0.8}
+                >
+                  {reAuthLoading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.reAuthConfirmBtnText}>Confirm & Delete Account</Text>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
+
+            <TouchableOpacity
+              style={styles.reAuthCancelBtn}
+              onPress={() => setReAuthVisible(false)}
+              disabled={reAuthLoading}
+            >
+              <Text style={styles.reAuthCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -417,5 +528,88 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     fontSize: 12,
     marginTop: 8,
+  },
+  reAuthOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  reAuthCard: {
+    width: "100%",
+    backgroundColor: Colors.surface ?? "#1a1a2e",
+    borderRadius: 16,
+    padding: 24,
+  },
+  reAuthTitle: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  reAuthSubtitle: {
+    color: Colors.textSecondary,
+    fontSize: 14,
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  reAuthInputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.inputBackground ?? Colors.border,
+    borderRadius: 10,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+  },
+  reAuthInput: {
+    flex: 1,
+    height: 48,
+    color: Colors.text,
+    fontSize: 15,
+  },
+  reAuthEye: {
+    padding: 4,
+  },
+  reAuthError: {
+    color: "#ef4444",
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  reAuthConfirmBtn: {
+    backgroundColor: "#ef4444",
+    borderRadius: 10,
+    height: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  reAuthConfirmBtnText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  reAuthGoogleBtn: {
+    flexDirection: "row",
+    backgroundColor: "#4285F4",
+    borderRadius: 10,
+    height: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  reAuthGoogleBtnText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  reAuthCancelBtn: {
+    alignItems: "center",
+    paddingVertical: 8,
+  },
+  reAuthCancelText: {
+    color: Colors.textMuted,
+    fontSize: 14,
   },
 });

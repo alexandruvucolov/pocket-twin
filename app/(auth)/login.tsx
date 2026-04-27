@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  Modal,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -21,7 +22,7 @@ const { width, height } = Dimensions.get("window");
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn, signUp, signInWithGoogle, isLoading, user } = useAuth();
+  const { signIn, signUp, signInWithGoogle, resetPassword, isLoading, user } = useAuth();
 
   // If user is already authenticated (e.g. session restored after reload), go to tabs.
   React.useEffect(() => {
@@ -35,9 +36,39 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetError, setResetError] = useState("");
+
+  const handleForgotPassword = async () => {
+    setResetError("");
+    const trimmedEmail = resetEmail.trim();
+    if (!trimmedEmail.includes("@")) {
+      setResetError("Enter a valid email address.");
+      return;
+    }
+    setResetLoading(true);
+    try {
+      await resetPassword(trimmedEmail);
+      setResetSent(true);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code ?? "";
+      if (code === "auth/user-not-found" || code === "auth/invalid-email") {
+        setResetError("No account found with this email.");
+      } else {
+        setResetError("Could not send reset email. Please try again.");
+      }
+    } finally {
+      setResetLoading(false);
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     try {
@@ -56,9 +87,11 @@ export default function LoginScreen() {
   const validate = () => {
     const e: Record<string, string> = {};
     if (!email.includes("@")) e.email = "Enter a valid email";
-    if (password.length < 6) e.password = "Password must be 6+ chars";
-    if (mode === "register" && name.trim().length < 2)
-      e.name = "Enter your name";
+    if (mode === "register") {
+      if (password.length < 8) e.password = "Password must be at least 8 characters";
+      if (confirmPassword !== password) e.confirmPassword = "Passwords do not match";
+      if (name.trim().length < 2) e.name = "Enter your name";
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -67,13 +100,28 @@ export default function LoginScreen() {
     if (!validate()) return;
     try {
       if (mode === "login") {
-        await signIn(email, password);
+        await signIn(email.trim(), password);
       } else {
-        await signUp(email, password, name);
+        await signUp(email.trim(), password, name);
       }
       router.replace("/(tabs)");
-    } catch {
-      Alert.alert("Oops", "Something went wrong. Please try again.");
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code ?? "";
+      if (code === "auth/weak-password") {
+        setErrors((prev) => ({ ...prev, password: "Password is too weak. Use at least 6 characters." }));
+      } else if (code === "auth/email-already-in-use") {
+        setErrors((prev) => ({ ...prev, email: "This email is already registered." }));
+      } else if (code === "auth/invalid-email") {
+        setErrors((prev) => ({ ...prev, email: "Enter a valid email address." }));
+      } else if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+        setErrors((prev) => ({ ...prev, password: "Incorrect email or password." }));
+      } else if (code === "auth/user-not-found") {
+        setErrors((prev) => ({ ...prev, email: "No account found with this email." }));
+      } else if (code === "auth/too-many-requests") {
+        setErrors((prev) => ({ ...prev, password: "Too many attempts. Please try again later." }));
+      } else {
+        Alert.alert("Oops", "Something went wrong. Please try again.");
+      }
     }
   };
 
@@ -105,6 +153,7 @@ export default function LoginScreen() {
               onPress={() => {
                 setMode("login");
                 setErrors({});
+                setConfirmPassword("");
               }}
             >
               <Text
@@ -121,6 +170,7 @@ export default function LoginScreen() {
               onPress={() => {
                 setMode("register");
                 setErrors({});
+                setConfirmPassword("");
               }}
             >
               <Text
@@ -201,6 +251,56 @@ export default function LoginScreen() {
             ) : null}
           </View>
 
+          {mode === "login" && (
+            <TouchableOpacity
+              style={styles.forgotPasswordLink}
+              onPress={() => {
+                setShowForgotPassword(true);
+                setResetEmail(email);
+                setResetSent(false);
+                setResetError("");
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.forgotPasswordText}>Forgot password?</Text>
+            </TouchableOpacity>
+          )}
+
+          {mode === "register" && (
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Confirm Password</Text>
+              <View
+                style={[
+                  styles.passwordWrap,
+                  errors.confirmPassword ? styles.inputError : null,
+                ]}
+              >
+                <TextInput
+                  style={styles.passwordInput}
+                  placeholder="••••••••"
+                  placeholderTextColor={Colors.textMuted}
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  secureTextEntry={!showConfirmPassword}
+                />
+                <TouchableOpacity
+                  style={styles.passwordToggle}
+                  onPress={() => setShowConfirmPassword((prev) => !prev)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name={showConfirmPassword ? "eye-off-outline" : "eye-outline"}
+                    size={20}
+                    color={Colors.textMuted}
+                  />
+                </TouchableOpacity>
+              </View>
+              {errors.confirmPassword ? (
+                <Text style={styles.errorText}>{errors.confirmPassword}</Text>
+              ) : null}
+            </View>
+          )}
+
           {/* Submit */}
           <TouchableOpacity
             style={[styles.button, isLoading && styles.buttonDisabled]}
@@ -249,6 +349,79 @@ export default function LoginScreen() {
           By continuing you agree to our Terms & Privacy Policy
         </Text>
       </ScrollView>
+
+      {/* Forgot Password Modal */}
+      <Modal
+        visible={showForgotPassword}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowForgotPassword(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Reset Password</Text>
+            {resetSent ? (
+              <>
+                <View style={styles.modalSuccessIcon}>
+                  <Ionicons name="checkmark-circle" size={48} color="#4ADE80" />
+                </View>
+                <Text style={styles.modalSuccessText}>
+                  Check your inbox! We sent a password reset link to{" "}
+                  <Text style={{ fontWeight: "700" }}>{resetEmail}</Text>.
+                </Text>
+                <TouchableOpacity
+                  style={styles.button}
+                  onPress={() => setShowForgotPassword(false)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.buttonText}>Done</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalSubtitle}>
+                  Enter your email and we'll send you a link to reset your password.
+                </Text>
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.label}>Email</Text>
+                  <TextInput
+                    style={[styles.input, resetError ? styles.inputError : null]}
+                    placeholder="you@example.com"
+                    placeholderTextColor={Colors.textMuted}
+                    value={resetEmail}
+                    onChangeText={(v) => { setResetEmail(v); setResetError(""); }}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoFocus
+                  />
+                  {resetError ? (
+                    <Text style={styles.errorText}>{resetError}</Text>
+                  ) : null}
+                </View>
+                <TouchableOpacity
+                  style={[styles.button, resetLoading && styles.buttonDisabled]}
+                  onPress={handleForgotPassword}
+                  disabled={resetLoading}
+                  activeOpacity={0.85}
+                >
+                  {resetLoading ? (
+                    <ActivityIndicator color={Colors.white} />
+                  ) : (
+                    <Text style={styles.buttonText}>Send Reset Link</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => setShowForgotPassword(false)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -440,5 +613,63 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 24,
     lineHeight: 18,
+  },
+  forgotPasswordLink: {
+    alignSelf: "flex-end",
+    marginBottom: 4,
+    marginTop: -8,
+  },
+  forgotPasswordText: {
+    color: Colors.primary,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 24,
+  },
+  modalCard: {
+    width: "100%",
+    backgroundColor: Colors.surface,
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: Colors.text,
+    marginBottom: 8,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  modalSuccessIcon: {
+    alignItems: "center",
+    marginVertical: 16,
+  },
+  modalSuccessText: {
+    fontSize: 15,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  modalCancelBtn: {
+    alignItems: "center",
+    marginTop: 12,
+    paddingVertical: 8,
+  },
+  modalCancelText: {
+    color: Colors.textMuted,
+    fontSize: 14,
+    fontWeight: "600",
   },
 });
